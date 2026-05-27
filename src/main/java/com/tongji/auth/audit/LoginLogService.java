@@ -1,5 +1,6 @@
 package com.tongji.auth.audit;
 
+import com.tongji.auth.mapper.LoginLogMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

@@ -2,7 +2,7 @@
 <!DOCTYPE mapper
         PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.tongji.auth.audit.LoginLogMapper">
+<mapper namespace="com.tongji.auth.mapper.LoginLogMapper">
 
     <insert id="insert" parameterType="com.tongji.auth.audit.LoginLog"
             useGeneratedKeys="true" keyProperty="id">

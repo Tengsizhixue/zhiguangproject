@@ -1,0 +1,213 @@
+spring:
+  application:
+    name: zhiguang
+    # 🔴 关键点：激活 dev 环境，让系统去读 application-dev.yml
+  profiles:
+    active: dev
+  #    数据库
+  datasource:
+    url: jdbc:mysql://${config.db.host}:${config.db.port}/${config.db.database}?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=UTC
+    username: ${config.db.username}
+    password: ${config.db.password}
+    # 也就是“翻译官”，让Java能跟MySQL说话
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 20 # 最大连接数
+      minimum-idle: 5 # 最小空闲连接数
+      idle-timeout: 60000 # 连接最大空闲时间，单位毫秒
+      max-lifetime: 1700000 # 连接最长生命周期，单位毫秒
+      connection-timeout: 30000 # 连接超时时间，单位毫秒
+      keepalive-time: 30000 # 连接存活时间，单位毫秒
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false # 日期格式化,false为yyyy-MM-dd HH:mm:ss
+  data:
+    redis:
+      host: ${config.redis.host}
+      port: ${config.redis.port}
+      password: ${config.redis.password}
+  kafka:
+    bootstrap-servers: ${config.kafka.server}
+    template:
+      #      给一个默认的主题
+      default-topic: counter-events
+    producer:
+      #      告诉 Kafka，“请把我的 Key（比如订单ID）用字符串规则转成二进制”
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # 告诉 Kafka，“请把我的 Value（比如订单详情）用字符串规则转成二进制”
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      #   当生产者发送一条消息给 Kafka，Leader 节点收到后，必须等待所有 Follower（备份节点）都同步成功了，才敢给你的 Java 代码回话说是“发送成功”
+      acks: all
+      retries: 3 # 重试次数
+      #      在这 10ms 内如果有其他消息来了，就打包在一起，用一次网络请求发出去。这能极大提升性能。
+      linger: 10ms
+      properties:
+        #        因为上面开启了 retries（重试）。假设你发了一条消息，Kafka 收到了，
+        #        但回执丢失了。你的程序以为失败了，又发了一遍。结果 Kafka 里就有了两条重复消息。
+        #       开启后，生产者会给每条消息打上编号。Kafka 发现编号重复，就会自动丢弃多余的那条。
+        enable.idempotence: true
+        #      在同一条连接上，上一条消息没收到成功回执之前，不允许发下一条。确保一定是 A -> B -> C 的顺序进入数据库。
+        max-in-flight-requests-per-connection: 1
+    consumer:
+      #      只要多个程序的 group-id 是一样的，Kafka 就认为它们是一个团队。
+      #      Kafka 会把 Topic 里的消息平均分给这个团队里的人。比如有 100 条消息，你有 2 个服务实例，每人处理 50 条。
+      group-id: counter-agg
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      #      以前积压的消息我不管了，我只处理我启动之后新进来的消息。
+      auto-offset-reset: latest
+      #      如果你的代码逻辑还没跑完（比如写数据库失败了），但 Kafka 以为你处理完了，这条消息就永久丢失了（业务上的丢失）。
+      enable-auto-commit: false
+    listener:
+      #      你的监听器方法每次只接收一个 ConsumerRecord 对象。
+      type: single
+      #      既然上面关闭了 auto-commit（自动提交），那总得有人负责提交吧？开启手动确认模式。
+      ack-mode: manual
+  ai:
+    deepseek:
+      api-key: ${config.ai.deepseek-key}
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-flash
+          #          这个参数控制 AI 回答的随机性（范围通常是 0 到 1）。
+          temperature: 0.8
+    openai:
+      #      这里虽然叫 openai，但地址填的是阿里云 DashScope 的"兼容模式"地址
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
+      api-key: ${config.ai.openai-key}
+      #      计算机看不懂中文，它需要把用户的提问（比如“怎么学 Java”）翻译成一串数字坐标（向量）
+      #      text-embedding-v4 就是负责做这个翻译工作的翻译官。
+      embedding:
+        options:
+          model: text-embedding-v4
+          dimensions: 1536 # 维度：生成的向量长度是 1536 个数字
+    vectorstore:
+      elasticsearch:
+        initialize-schema: true
+        index-name: zhiguang-ai-index
+        dimensions: 1536
+  elasticsearch:
+    uris: ${config.es.uri}
+
+canal:
+  enabled: false
+  host: ${config.canal.host}
+  port: ${config.canal.port}
+  #  这是 Canal 服务端里的一个核心概念。一个 Canal 服务可以同时监听多个 MySQL 实例。example 是默认的实例名。
+  destination: example
+  #  这是连接 Canal 服务端所需的凭证（注意：这不是 MySQL 的密码，而是 Canal 服务的密码，默认通常是这两个）
+  username: ${config.canal.username}
+  password: ${config.canal.password}
+  #  你的 MySQL 里可能有几百张表，但你不需要监听所有的。这里配置的是：只监听 zhiguang 数据库下的 outbox 表。
+  filter: zhiguang\.outbox
+  #  程序每次去 Canal 服务端拉数据时，最多拉 1000 条。如果数据太多，就分批拉。
+  batchSize: 1000
+  #  如果这次去拉数据发现是空的（MySQL 最近没变化），那就歇 1000 毫秒（1秒）再去拉。避免空转浪费 CPU。
+  intervalMs: 1000
+counter:
+  rebuild:
+    enabled: false #设为 false 表示程序启动时，不要强制把 Redis 里的计数器删了从数据库重算
+    lock:
+      ttl-ms: 5000       # 锁的寿命：5秒
+      watchdog-ms: 30000 # 看门狗时间：30秒
+    rate:
+      permits: 3 #每 10秒 的窗口期内，只允许操作 3次。
+      window-seconds: 10
+    backoff:
+      base-ms: 500 # 第一次失败后，等 0.5秒 再试。
+      max-ms: 30000 # 如果一直失败，最多等 30秒。
+
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  #  开启后：MyBatis 会自动帮你把数据库查出来的 user_name 赋值给 Java 对象里的 userName，不用你手动写映射代码了。
+  configuration:
+    map-underscore-to-camel-case: true
+auth:
+  jwt:
+    issuer: zhiguang # 签发者 在 Token 里盖个章，表示“这个 Token 是智光系统签发的”。
+    key-id: zhiguang # 密钥ID 给加密用的钥匙起个名字。
+    #    这里用的是 RSA 非对称加密（这是目前最安全的做法之一）。
+    private-key: classpath:keys/private.pem #私钥 (private)：用来生成 Token。只有你的服务器知道，绝对保密。
+    public-key: classpath:keys/public.pem #公钥 (public)：用来验证 Token。可以发给网关或者前端，用来检查 Token 是不是伪造的。
+    #    有效期 (Time To Live)。这是 ISO-8601 标准时间格式。
+    access-token-ttl: PT15M #Period Time 15 Minutes (15分钟)。这是“短令牌”，用来平时访问接口。
+    refresh-token-ttl: P7D #Period 7 Days (7天)。这是“长令牌”，用来在短令牌过期后自动刷新，不用用户重新登录。
+
+  verification:
+    code-length: 6         # 验证码长度：6位 (如 123456)
+    ttl: PT5M              # 有效期：5分钟 (5分钟内不填就作废)
+    max-attempts: 5        # 最大尝试次数：5次 (输错5次就锁死，防暴力破解)
+    send-interval: PT60S   # 发送间隔：60秒 (点了一次后，60秒内不能再点)
+    daily-limit: 10        # 每日上限：10次 (防止有人恶意刷你的短信费)
+  #  这是 BCrypt 算法的“计算成本”参数。数字越大，加密一次越慢，黑客暴力破解就越难。系统中 “未来注册的所有用户” 的密码管理策略。
+  password:
+    bcrypt-strength: 12
+    min-length: 8   # 最小长度：密码至少8位
+
+logging:
+  level:
+    # 1. 全局门槛：只看重要的信息，过滤掉 Spring 框架内部几千行的废话
+    root: INFO
+    # 2. 你的业务代码：开启 DEBUG，看清楚每一步逻辑
+    com.xiaoce: DEBUG
+    # 3. MyBatis SQL 日志（最重要！）
+    # 开启 TRACE 或 DEBUG 级别，你就能看到每一条 SQL 是怎么执行的
+    com.xiaoce.zhiguang.mapper: TRACE
+# 阿里云 OSS 这一块配置决定了你的文件上传功能（比如用户上传头像）怎么连接到阿里云 OSS。
+oss:
+  endpoint: ${config.oss.endpoint} # OSS 的地址
+  access-key-id: ${config.oss.ak} # AccessKey ID (公钥)
+  access-key-secret: ${config.oss.sk} # AccessKey Secret (私钥)
+  bucket: ${config.oss.bucket}
+  #  给你的文件访问地址提供一个“换马甲”**（自定义域名/CDN加速）的机会。
+  public-domain: ${OSS_PUBLIC_DOMAIN:}
+  # 用户的头像文件会保存在这个文件夹下，比如：avatars/1234567890.jpg
+  folder: avatars
+
+
+  #  多级缓存（L2 Cache） 和 热点数据检测（HotKey） 的高级配置。
+
+#  通常我们用 Redis 做缓存（L1）。但如果访问量极大，Redis 的网络请求也是瓶颈。
+#  这时候我们会引入 L2 本地缓存（比如用 Caffeine 或 Guava），
+#  直接把数据存在 Java 程序的内存里，读取速度是纳秒级的。
+cache:
+  l2:
+    public-cfg:          # 场景 A：还没有到秒杀时间，偶尔有几个学生点进来看课程详情（课程标题、介绍、价格）。
+      ttl-seconds: 15    # 存活时间：15秒。过期后重新去 Redis/DB 查。
+      max-size: 1000     # 容量限制：最多存1000个对象。防止把内存撑爆 (OOM)。
+    mine-cfg:            # 场景 B：个人配置 (比如"我的"个人信息)
+      ttl-seconds: 10    # 存活时间：10秒。个人数据可能变动快，存短点。
+      max-size: 1000     # 容量限制：同上。
+  #  热点 Key” (Hot Key) 是指突然被几十万人同时访问的数据（比如“某明星官宣分手”）。
+  #  如果都去打 Redis，Redis 单节点可能被打挂。
+  #  这就需要一个“自动探测仪”：一旦发现某个 Key 极其热门，就自动把它升级为本地缓存，并延长缓存时间。
+  #  这是一个滑动窗口算法。系统不会傻傻地等 60 秒才算一次，而是每过 10 秒就看一眼过去 60 秒的总流量，反应更灵敏。
+  hotkey: #场景 B 时间来到 11:59:50，倒计时即将结束，几千名学生疯狂刷新页面准备抢课。流量瞬间爆炸！
+    window-seconds: 60      # 观察窗口：每 60 秒作为一个统计周期。
+    segment-seconds: 10     # 时间切片：把 60 秒切成 6 份，每 10 秒更新一次统计。用来统计次数，为后续热度阈值做判断
+    level-low: 50           # 低热度阈值：60秒内访问超过 50 次。
+    level-medium: 200       # 中热度阈值：60秒内访问超过 200 次。
+    level-high: 500         # 高热度阈值：60秒内访问超过 500 次。
+    extend-low-seconds: 20    # 如果是低热度：在本地缓存 20 秒。
+    extend-medium-seconds: 60 # 如果是中热度：在本地缓存 60 秒。
+    extend-high-seconds: 120  # 如果是高热度：在本地缓存 120 秒 (2分钟)。
+#swagger配置
+swagger:
+  enabled: true
+  title: "智光项目实战接口文档"
+  description: "这是一款用于学习的平台"
+  version: "1.0.0"
+  contact-name: "小策"
+  contact-email: "1792424075@qq.com"
+
+#mp配置
+mybatis-plus:
+  # 扫描 XML 文件位置
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    # 在控制台打印 SQL 日志，开发阶段必开，生产阶段关掉
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 开启驼峰命名转换（数据库 user_name -> 实体类 userName）
+    map-underscore-to-camel-case: true

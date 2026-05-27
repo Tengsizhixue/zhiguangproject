@@ -16,7 +16,7 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.tongji.counter.service.CounterService;
 import com.tongji.storage.config.OssProperties;
 import com.tongji.llm.rag.RagIndexService;
-import com.tongji.relation.outbox.OutboxMapper;
+import com.tongji.relation.mapper.OutboxMapper;
 import com.tongji.cache.hotkey.HotKeyDetector;
 import jakarta.annotation.Resource;
 import org.slf4j.Logger;

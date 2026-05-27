@@ -74,19 +74,52 @@ public class AuthService {
      * @return 响应体，包含目标标识、场景与验证码过期秒数。
      * @throws BusinessException 当标识格式错误或存在性不符合场景要求时抛出。
      */
-    public SendCodeResponse sendCode(SendCodeRequest request) {
-        validateIdentifier(request.identifierType(), request.identifier());
-        String normalized = normalizeIdentifier(request.identifierType(), request.identifier());
-        boolean exists = identifierExists(request.identifierType(), normalized);
-        if (request.scene() == VerificationScene.REGISTER && exists) {
-            throw new BusinessException(ErrorCode.IDENTIFIER_EXISTS);
-        }
-        if ((request.scene() == VerificationScene.LOGIN || request.scene() == VerificationScene.RESET_PASSWORD) && !exists) {
-            throw new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND);
-        }
-        SendCodeResult result = verificationService.sendCode(request.scene(), normalized);
-        return new SendCodeResponse(result.identifier(), result.scene(), result.expireSeconds());
+public SendCodeResponse sendCode(SendCodeRequest request) {
+    // 1. 验证标识格式：检查手机号或邮箱格式是否正确
+    //    - 如果是手机号，调用 IdentifierValidator.isValidPhone() 验证
+    //    - 如果是邮箱，调用 IdentifierValidator.isValidEmail() 验证
+    //    - 格式不正确时抛出 BusinessException，返回错误信息
+
+    validateIdentifier(request.identifierType(), request.identifier());
+
+    // 2. 标准化标识：将标识转换为统一格式
+    //    - 手机号：去除前后空格
+    //    - 邮箱：去除前后空格并转为小写（避免大小写不一致）
+    //    - 标准化后的标识用于后续的数据库查询和验证码发送
+    String normalized = normalizeIdentifier(request.identifierType(), request.identifier());
+
+    // 3. 检查标识是否存在：查询数据库判断该标识是否已注册
+    //    - 如果是手机号，调用 userService.existsByPhone() 查询
+    //    - 如果是邮箱，调用 userService.existsByEmail() 查询
+    //    - 返回 true 表示已存在，false 表示不存在
+    boolean exists = identifierExists(request.identifierType(), normalized);
+
+    // 4. 场景校验：注册场景要求标识不存在
+    //    - 如果是注册场景且标识已存在，抛出异常
+    //    - 防止用户重复注册，保护账号唯一性
+    if (request.scene() == VerificationScene.REGISTER && exists) {
+        throw new BusinessException(ErrorCode.IDENTIFIER_EXISTS);
     }
+
+    // 5. 场景校验：登录和重置密码场景要求标识必须存在
+    //    - 登录场景：标识不存在则无法登录
+    //    - 重置密码场景：标识不存在则无法重置密码
+    //    - 如果标识不存在，抛出异常提示用户先注册
+    if ((request.scene() == VerificationScene.LOGIN || request.scene() == VerificationScene.RESET_PASSWORD) && !exists) {
+        throw new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND);
+    }
+
+    // 6. 发送验证码：调用验证码服务发送验证码
+    //    - 传入场景（注册/登录/重置密码）和标准化后的标识
+    //    - 返回发送结果，包含标识、场景和过期秒数
+    SendCodeResult result = verificationService.sendCode(request.scene(), normalized);
+
+    // 7. 构造响应：将发送结果转换为响应对象返回给客户端
+    //    - 包含目标标识、场景和验证码过期时间
+    //    - 客户端可根据过期时间显示倒计时，提升用户体验
+    return new SendCodeResponse(result.identifier(), result.scene(), result.expireSeconds());
+}
+
 
     /**
      * 注册用户并签发令牌。
@@ -275,9 +308,11 @@ public class AuthService {
      * @throws BusinessException 当格式不合法时抛出。
      */
     private void validateIdentifier(IdentifierType type, String identifier) {
+        //判断是否为大陆手机号
         if (type == IdentifierType.PHONE && !IdentifierValidator.isValidPhone(identifier)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "手机号格式错误");
         }
+        //是否匹配邮箱正则
         if (type == IdentifierType.EMAIL && !IdentifierValidator.isValidEmail(identifier)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "邮箱格式错误");
         }

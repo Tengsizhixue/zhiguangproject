@@ -19,28 +19,38 @@
 
     <properties>
         <java.version>21</java.version>
+        <!-- 可选：显式锁定测试依赖版本（Spring Boot父POM已管理，此处为兜底） -->
+        <mockito.version>5.7.0</mockito.version>
+        <spring-security.version>6.2.4</spring-security.version>
     </properties>
 
+    <!-- 仓库配置：增加阿里云公共仓库（解决Canal等依赖） -->
     <repositories>
+        <!-- 阿里云公共仓库：包含 canal 等阿里系依赖 -->
+        <repository>
+            <id>aliyun-public</id>
+            <name>Aliyun Public Repository</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+
+        <!-- Spring Milestones 仓库（Spring AI 及部分依赖需要） -->
         <repository>
             <id>spring-milestones</id>
             <name>Spring Milestones</name>
             <url>https://repo.spring.io/milestone</url>
         </repository>
 
+        <!-- Spring Snapshots 仓库（用于开发版，若有需要可保留） -->
         <repository>
             <id>spring-snapshots</id>
             <name>Spring Snapshots</name>
             <url>https://repo.spring.io/snapshot</url>
-            <releases>
-                <enabled>false</enabled>
-            </releases>
-        </repository>
-
-        <repository>
-            <name>Central Portal Snapshots</name>
-            <id>central-portal-snapshots</id>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
             <releases>
                 <enabled>false</enabled>
             </releases>
@@ -50,123 +60,138 @@
         </repository>
     </repositories>
 
+    <!-- 依赖版本管理：升级 Spring AI BOM 至支持 DeepSeek 的版本 -->
     <dependencyManagement>
         <dependencies>
-            <!-- Spring AI 依赖版本统一管理（BOM），用于锁定 Spring AI 相关依赖版本 -->
+            <!-- Spring AI 依赖版本统一管理（BOM），从 1.0.3 升级到 1.0.5 -->
             <dependency>
                 <groupId>org.springframework.ai</groupId>
                 <artifactId>spring-ai-bom</artifactId>
-                <version>1.0.3</version>
+                <version>1.0.5</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+
+            <!-- 可选：显式指定测试依赖版本（避免任何可能的解析问题） -->
+            <dependency>
+                <groupId>org.mockito</groupId>
+                <artifactId>mockito-junit-jupiter</artifactId>
+                <version>${mockito.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.security</groupId>
+                <artifactId>spring-security-test</artifactId>
+                <version>${spring-security.version}</version>
+                <scope>test</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
 
     <dependencies>
-        <!-- Elasticsearch 官方 Java API Client（类型安全的 ES 调用） -->
+        <!-- Elasticsearch 官方 Java API Client -->
         <dependency>
             <groupId>co.elastic.clients</groupId>
             <artifactId>elasticsearch-java</artifactId>
             <version>9.2.1</version>
         </dependency>
 
-        <!-- Elasticsearch 低层 REST 客户端（底层通信与兼容性组件） -->
+        <!-- Elasticsearch 低层 REST 客户端 -->
         <dependency>
             <groupId>org.elasticsearch.client</groupId>
             <artifactId>elasticsearch-rest-client</artifactId>
             <version>9.2.1</version>
         </dependency>
 
-        <!-- Spring Web：提供 MVC、REST Controller、RestTemplate 等 Web 能力 -->
+        <!-- Spring Web -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- Spring AI OpenAI Starter：接入 OpenAI 模型调用能力 -->
+        <!-- Spring AI OpenAI Starter -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-openai</artifactId>
         </dependency>
 
-        <!-- Spring AI Elasticsearch 向量库：用于向量检索/Embedding 存储（RAG 基础组件） -->
+        <!-- Spring AI Elasticsearch 向量库 -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-vector-store-elasticsearch</artifactId>
         </dependency>
 
-        <!-- 参数校验：Bean Validation（Jakarta Validation / Hibernate Validator） -->
+        <!-- 参数校验 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- JDBC：数据源与 JDBC 访问基础（配合 MyBatis 使用） -->
+        <!-- JDBC -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
 
-        <!-- MyBatis Spring Boot Starter：MyBatis 集成与 Mapper 扫描 -->
+        <!-- MyBatis Spring Boot Starter -->
         <dependency>
             <groupId>org.mybatis.spring.boot</groupId>
             <artifactId>mybatis-spring-boot-starter</artifactId>
             <version>3.0.3</version>
         </dependency>
 
-        <!-- MySQL 驱动：连接 MySQL 数据库 -->
+        <!-- MySQL 驱动 -->
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
             <version>9.5.0</version>
         </dependency>
 
-        <!-- Spring Security：认证/鉴权框架基础 -->
+        <!-- Spring Security -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- OAuth2 Resource Server：用于校验 Bearer JWT（无状态 API 鉴权） -->
+        <!-- OAuth2 Resource Server -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
         </dependency>
 
-        <!-- Redis：Spring Data Redis（缓存、验证码、计数等存储） -->
+        <!-- Redis -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-        <!-- Redisson：分布式锁、限流等高级 Redis 能力封装 -->
+        <!-- Redisson -->
         <dependency>
             <groupId>org.redisson</groupId>
             <artifactId>redisson</artifactId>
             <version>3.52.0</version>
         </dependency>
 
-        <!-- Kafka：用于异步写入、聚合消费（计数/Outbox 等） -->
+        <!-- Kafka -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
 
-        <!-- Caffeine：本地内存缓存（高性能 LRU/TTL 缓存） -->
+        <!-- Caffeine -->
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
             <version>3.1.8</version>
         </dependency>
 
-        <!-- Actuator：健康检查与运行指标（/actuator/*） -->
+        <!-- Actuator -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Lombok：减少样板代码（Getter/Setter/Builder 等），编译期生效 -->
+        <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -174,62 +199,62 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Mail：邮件发送能力（验证码/通知等） -->
+        <!-- Mail -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-mail</artifactId>
         </dependency>
 
-        <!-- 阿里云 OSS SDK：对象存储直传/签名/上传下载 -->
+        <!-- 阿里云 OSS SDK -->
         <dependency>
             <groupId>com.aliyun.oss</groupId>
             <artifactId>aliyun-sdk-oss</artifactId>
             <version>3.17.3</version>
         </dependency>
 
-        <!-- 测试：Spring Boot 测试套件（JUnit、Mock、Test utilities） -->
+        <!-- 测试：Spring Boot 测试套件 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- Spring Security 测试：提供 MockMvc 安全测试与注解支持 -->
+        <!-- Spring Security 测试 -->
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- Mockito JUnit Jupiter：Mockito 与 JUnit5 集成 -->
+        <!-- Mockito JUnit Jupiter -->
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
 
-        <!-- Alibaba Canal Client：订阅/消费 Canal 增量数据（MySQL binlog） -->
+        <!-- Alibaba Canal Client -->
         <dependency>
             <groupId>com.alibaba.otter</groupId>
             <artifactId>canal.client</artifactId>
             <version>1.1.8</version>
         </dependency>
 
-        <!-- Alibaba Canal Common：Canal 公共工具与基础模型 -->
+        <!-- Alibaba Canal Common -->
         <dependency>
             <groupId>com.alibaba.otter</groupId>
             <artifactId>canal.common</artifactId>
             <version>1.1.8</version>
         </dependency>
 
-        <!-- Alibaba Canal Protocol：Canal 通信协议与消息结构 -->
+        <!-- Alibaba Canal Protocol -->
         <dependency>
             <groupId>com.alibaba.otter</groupId>
             <artifactId>canal.protocol</artifactId>
             <version>1.1.8</version>
         </dependency>
 
-        <!-- Spring AI DeepSeek Starter：接入 DeepSeek 模型调用能力 -->
+        <!-- Spring AI DeepSeek Starter（BOM 1.0.5 中已包含） -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-deepseek</artifactId>

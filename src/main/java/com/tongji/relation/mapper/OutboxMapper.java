@@ -1,4 +1,4 @@
-package com.tongji.relation.outbox;
+package com.tongji.relation.mapper;
 
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;

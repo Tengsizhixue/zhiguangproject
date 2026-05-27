@@ -1,4 +1,4 @@
-package com.tongji.auth.config;
+package com.tongji.auth.util;
 
 import org.springframework.core.io.Resource;
 

@@ -62,7 +62,6 @@ public class AuthController {
      * 注册新用户并自动登录。
      * <p>
      * 验证标识与验证码后创建用户，若提供密码则进行复杂度校验并保存密码哈希；成功后签发 Access/Refresh Token。
-     *
      * @param request     请求体，包含：标识类型与值、验证码、可选密码、是否同意协议。
      * @param httpRequest 用于解析客户端信息（IP 与 User-Agent），记录审计日志。
      * @return 认证响应，包含用户信息与令牌对。

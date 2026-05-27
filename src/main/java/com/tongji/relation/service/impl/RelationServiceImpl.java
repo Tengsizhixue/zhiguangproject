@@ -4,7 +4,7 @@ import com.tongji.relation.mapper.RelationMapper;
 import com.tongji.relation.service.RelationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tongji.relation.event.RelationEvent;
-import com.tongji.relation.outbox.OutboxMapper;
+import com.tongji.relation.mapper.OutboxMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;

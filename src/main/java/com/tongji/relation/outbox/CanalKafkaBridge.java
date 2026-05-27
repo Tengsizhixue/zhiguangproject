@@ -90,6 +90,10 @@ public class CanalKafkaBridge implements SmartLifecycle {
             log.info("Canal bridge start skipped: running={} enabled={} host={} port={} dest={} filter={}", running, enabled, host, port, destination, filter);
             return;
         }
+        if (!enabled) {
+            log.info("Canal bridge is disabled by configuration. Skip connecting.");
+            return;
+        }
         // 标记运行并使用全局线程池异步执行主循环
         running = true;
         taskExecutor.execute(() -> {
