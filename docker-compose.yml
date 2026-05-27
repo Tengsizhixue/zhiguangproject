@@ -1,0 +1,72 @@
+services:
+  # 1. MySQL 8.0
+  mysql:
+    image: mysql:8.0
+    container_name: zg-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: zhiguang
+    ports:
+      - "3306:3306"
+    command:
+      - --log-bin=mysql-bin
+      - --binlog-format=ROW
+      - --server-id=1
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  # 2. Redis 7.0
+  redis:
+    image: redis:7.0
+    container_name: zg-redis
+    ports:
+      - "6379:6379"
+
+  # 3. Kafka (使用 Apache 官方镜像，KRaft 模式)
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: zg-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+
+  # 4. Elasticsearch 9.2.1
+  elasticsearch:
+    image: elasticsearch:9.2.1
+    container_name: zg-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+
+  # 5. Canal Server
+  canal-server:
+    image: canal/canal-server:v1.1.8
+    container_name: zg-canal
+    ports:
+      - "11111:11111"
+    environment:
+      - canal.auto.scan=false
+      - canal.destinations=example
+      # Canal 在 Docker 内部网络中通过服务名直接访问 MySQL 的 3306 端口
+      - canal.instance.master.address=mysql:3306
+      - canal.instance.dbUsername=root
+      - canal.instance.dbPassword=root
+      - canal.serverMode=kafka
+      - canal.mq.servers=kafka:9092
+    depends_on:
+      - mysql
+      - kafka
+
+volumes:
+  mysql-data:
