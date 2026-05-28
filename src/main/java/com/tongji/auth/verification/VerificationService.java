@@ -49,9 +49,9 @@ public class VerificationService {
         //    - scene不能为null，identifier不能为空或空白字符串
         //    - 如果参数无效，抛出业务异常，提示用户提供正确的参数
         // 等价于检查以下任一情况：
-// 1. identifier == null
-// 2. identifier.equals("")
-// 3. identifier.trim().equals("")
+        // 1. identifier == null
+        // 2. identifier.equals("")
+        // 3. identifier.trim().equals("")
         if (scene == null || !StringUtils.hasText(identifier)) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请提供正确的验证码发送参数");
         }
@@ -157,7 +157,6 @@ public class VerificationService {
         if (Boolean.FALSE.equals(isSuccess)) {
             throw new BusinessException(ErrorCode.VERIFICATION_RATE_LIMIT);
         }
-
     }
 
 
@@ -168,57 +167,57 @@ public class VerificationService {
      * @param identifier 标识（手机号或邮箱）。
      * @param limit      每日上限次数。
      */
-private void enforceDailyLimit(VerificationScene scene, String identifier, int limit) {
-    // 1. 检查限制参数：如果每日限制小于等于0，表示不限制发送次数
-    //    - limit <= 0：配置为不限制，直接返回，跳过后续检查
-    //    - limit > 0：需要进行每日发送次数限制
-    if (limit <= 0) {
-        return;
-    }
+    private void enforceDailyLimit(VerificationScene scene, String identifier, int limit) {
+        // 1. 检查限制参数：如果每日限制小于等于0，表示不限制发送次数
+        //    - limit <= 0：配置为不限制，直接返回，跳过后续检查
+        //    - limit > 0：需要进行每日发送次数限制
+        if (limit <= 0) {
+            return;
+        }
 
-    // 2. 生成当前日期字符串：使用格式化器将当前日期转换为yyyyMMdd格式
-    //    - 例如：2025年5月27日转换为"20250527"
-    //    - 用于区分不同日期的发送计数，实现每日重置
-    //    - DAY_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd")
-    String date = DAY_FORMAT.format(LocalDate.now());
+        // 2. 生成当前日期字符串：使用格式化器将当前日期转换为yyyyMMdd格式
+        //    - 例如：2025年5月27日转换为"20250527"
+        //    - 用于区分不同日期的发送计数，实现每日重置
+        //    - DAY_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd")
+        String date = DAY_FORMAT.format(LocalDate.now());
 
-    // 3. 构造Redis计数键：格式为 auth:code:count:场景名:标识符:日期
-    //    - 场景名：REGISTER/LOGIN/RESET_PASSWORD
-    //    - 标识符：手机号或邮箱
-    //    - 日期：yyyyMMdd格式的当前日期
-    //    - 示例：auth:code:count:REGISTER:13800138000:20250527
-    //    - 不同场景、不同标识、不同日期都有独立的计数
-    String key = "auth:code:count:" + scene.name() + ":" + identifier + ":" + date;
+        // 3. 构造Redis计数键：格式为 auth:code:count:场景名:标识符:日期
+        //    - 场景名：REGISTER/LOGIN/RESET_PASSWORD
+        //    - 标识符：手机号或邮箱
+        //    - 日期：yyyyMMdd格式的当前日期
+        //    - 示例：auth:code:count:REGISTER:13800138000:20250527
+        //    - 不同场景、不同标识、不同日期都有独立的计数
+        String key = "auth:code:count:" + scene.name() + ":" + identifier + ":" + date;
 
-    // 4. 原子递增计数：使用Redis的INCR命令原子性地增加计数器
-    //    - 如果键不存在，自动创建并初始化为1
-    //    - 如果键存在，值加1
-    //    - 返回递增后的新值
-    //    - 原子操作确保并发安全，避免计数错误
+        // 4. 原子递增计数：使用Redis的INCR命令原子性地增加计数器
+        //    - 如果键不存在，自动创建并初始化为1
+        //    - 如果键存在，值加1
+        //    - 返回递增后的新值
+        //    - 原子操作确保并发安全，避免计数错误
     /*隐患：非原子操作导致的 Redis 内存泄漏（僵尸 Key）
-动作 A（递增）和 动作 B（设置过期时间）是两次独立的网络请求。
-假设今天用户第一次发短信，系统刚执行完动作 A（Redis 里生成了 count=1），突然！就在这一毫秒，你的 Java 服务器宕机了、重启了，或者网络断了。
-动作 B 就永远不会被执行了。
-结果就是：Redis 里留下了一个永远没有过期时间的 Key（...:2023-10-25）。
-因为到了 10 月 26 号代码会自动去查新的 Key，旧的 Key 再也没有人去访问，它就变成了“僵尸 Key”，一直吃着 Redis 的宝贵内存。日积月累，Redis 内存可能会被撑爆。*/
-    Long count = stringRedisTemplate.opsForValue().increment(key);
+      动作 A（递增）和 动作 B（设置过期时间）是两次独立的网络请求。
+      假设今天用户第一次发短信，系统刚执行完动作 A（Redis 里生成了 count=1），突然！就在这一毫秒，你的 Java 服务器宕机了、重启了，或者网络断了。
+      动作 B 就永远不会被执行了。
+      结果就是：Redis 里留下了一个永远没有过期时间的 Key（...:2023-10-25）。
+      因为到了 10 月 26 号代码会自动去查新的 Key，旧的 Key 再也没有人去访问，它就变成了“僵尸 Key”，一直吃着 Redis 的宝贵内存。日积月累，Redis 内存可能会被撑爆。*/
+        Long count = stringRedisTemplate.opsForValue().increment(key);
 
-    // 5. 设置过期时间：如果是第一次创建该键（count == 1），则设置过期时间
-    //    - 只在第一次创建时设置过期时间，避免重复设置
-    //    - 过期时间为1天，确保第二天自动重置计数
-    //    - 利用Redis的TTL机制实现每日自动清理
-    if (count != null && count == 1L) {
-        stringRedisTemplate.expire(key, Duration.ofDays(1));
-    }
+        // 5. 设置过期时间：如果是第一次创建该键（count == 1），则设置过期时间
+        //    - 只在第一次创建时设置过期时间，避免重复设置
+        //    - 过期时间为1天，确保第二天自动重置计数
+        //    - 利用Redis的TTL机制实现每日自动清理
+            if (count != null && count == 1L) {
+                stringRedisTemplate.expire(key, Duration.ofDays(1));
+            }
 
-    // 6. 检查是否超限：如果当前计数超过每日限制，抛出异常
-    //    - count > limit：今日发送次数已超过配置的上限
-    //    - 抛出业务异常，提示用户已达到每日发送限制
-    //    - 保护系统资源，防止恶意大量发送验证码
-    if (count != null && count > limit) {
-        throw new BusinessException(ErrorCode.VERIFICATION_DAILY_LIMIT);
+        // 6. 检查是否超限：如果当前计数超过每日限制，抛出异常
+        //    - count > limit：今日发送次数已超过配置的上限
+        //    - 抛出业务异常，提示用户已达到每日发送限制
+        //    - 保护系统资源，防止恶意大量发送验证码
+        if (count != null && count > limit) {
+            throw new BusinessException(ErrorCode.VERIFICATION_DAILY_LIMIT);
+        }
     }
-}
 
 
     /**
