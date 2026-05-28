@@ -30,8 +30,8 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
      */
     @Override
     public void storeToken(long userId, String tokenId, Duration ttl) {
-        String key = key(userId, tokenId);
-        redisTemplate.opsForValue().set(key, "1", ttl);
+        String key = key(userId, tokenId);          // 生成唯一键，例如 "refresh:123:abc-123"
+        redisTemplate.opsForValue().set(key, "1", ttl);  // 存储 "1" 并设置过期时间
     }
 
     /**
