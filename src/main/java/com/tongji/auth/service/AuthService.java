@@ -319,31 +319,171 @@ public SendCodeResponse sendCode(SendCodeRequest request) {
     /**
      * 使用刷新令牌获取新的令牌对。
      * <p>
-     * 校验刷新令牌类型与白名单有效性，签发新令牌后撤销旧刷新令牌并存储新令牌。
+     * 功能说明：实现JWT令牌的刷新机制，当访问令牌过期时，客户端可以使用刷新令牌获取新的令牌对。
+     * 该方法实现了完整的令牌刷新流程，包括令牌验证、用户查询、新令牌生成、令牌轮换等步骤。
+     * <p>
+     * 核心特性：
+     * - 令牌轮换：每次刷新生成全新的令牌对，旧令牌立即失效
+     * - 多层验证：签名验证、类型验证、白名单验证、用户验证
+     * - 安全防护：防止令牌重放攻击、防止令牌滥用
+     * - 自动管理：自动更新Redis白名单，实现令牌的主动管理
+     * <p>
+     * 令牌刷新流程：
+     * <pre>
+     * ┌─────────────────────────────────────────────────────────┐
+     *              令牌刷新完整流程                                │
+     * └─────────────────────────────────────────────────────────┘
      *
-     * @param request 刷新请求，包含：refreshToken。
-     * @return 新的令牌响应。
-     * @throws BusinessException 当刷新令牌无效或用户不存在时抛出。
+     * 客户端携带刷新令牌请求刷新
+     *       ↓
+     * 解码刷新令牌（验证签名和过期时间）
+     *       ↓
+     * 验证令牌类型（必须是"refresh"）
+     *       ↓
+     * 提取用户ID和令牌ID
+     *       ↓
+     * 检查Redis白名单（令牌是否有效）
+     *       ↓
+     * 查询用户信息（用户是否存在）
+     *       ↓
+     * 生成新的令牌对（全新的访问令牌和刷新令牌）
+     *       ↓
+     * 撤销旧刷新令牌（令牌轮换）
+     *       ↓
+     * 存储新刷新令牌到白名单
+     *       ↓
+     * 返回新令牌对给客户端
+     * </pre>
+     *
+     * @param request 刷新请求，包含刷新令牌（refreshToken）
+     * @return 新的令牌响应，包含新的访问令牌和刷新令牌
+     * @throws BusinessException 当刷新令牌无效、令牌类型错误、用户不存在时抛出
      */
     public TokenResponse refresh(TokenRefreshRequest request) {
+//        你不是在调用一个公共的静态方法 JwtDecoder.decode()，你是在调用一个被你的公钥初始化过、
+//        脑子里记住了你的规则的特定“实例对象”。对象把你的配置（公钥）变成了它自己的内部状态（属性）。
+        //涉及java的反射调用JwtDecoder.decode()方法
+        //进行jwt的验证（载荷验证日期等）头部+载荷配合R256算法验证签名，最终返回Jwt对象，包含所有信息
         Jwt jwt = decodeRefreshToken(request.refreshToken());
 
+        //    从JWT声明中提取token_type声明，检查是否为"refresh"
         if (!Objects.equals("refresh", jwtService.extractTokenType(jwt))) {
+            //类型错误，刷新令牌类型必须是"refresh"
             throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID);
         }
 
+        // 3. 提取载荷自定义里的用户ID
         long userId = jwtService.extractUserId(jwt);
+
+        //    从JWT声明中提取jti（JWT ID）声明，作为令牌的唯一标识符
         String tokenId = jwtService.extractTokenId(jwt);
 
+        // 5. 验证白名单有效性
+        //    检查刷新令牌是否在Redis白名单中，以及是否仍然有效
+        //    - 检查键是否存在
         if (!refreshTokenStore.isTokenValid(userId, tokenId)) {
             throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID);
         }
 
+        // 6. 查询用户信息
+        //    根据用户ID从数据库查询用户信息，确保用户仍然存在
+        //    - 返回Optional<User>，避免NullPointerException
+        //    - 如果用户不存在，返回Optional.empty()
+        //    - 如果用户不存在，抛出IDENTIFIER_NOT_FOUND异常2. 为什么特意用 .ofNullable()？（而不是 .of()）
+        //Optional 提供了几个装盒子的静态方法，它们的作用完全不同：
+        //
+        //Optional.empty()：直接给你一个空盒子。
+        //Optional.of(value)：给你一个必须有东西的盒子。如果你传一个 null 进去，它会在装盒子的瞬间直接抛出空指针异常。
+        //Optional.ofNullable(value)：这是一个智能盒子。如果你传进去的是个真实的用户对象，它就包起来；
+        // 如果查数据库没查到，传进去的是个 null，它不会报错，而是默默地把它转换成一个安全的“空盒子”（等同于 Optional.empty()）。
+        //因为 userMapper.findById(id) 在数据库找不到记录时一定会返回 null，所以这里必须且最适合使用 .ofNullable() 来进行安全包装。
+        //3. 解锁强大的函数式链式调用（终极好处）
+        //将数据库的结果包装成 Optional 后，后续的业务逻辑可以写得像诗一样流畅，彻底告别丑陋的 if-else 嵌套。
+        //场景 A：如果找不到用户，就抛出业务异常（最常见）
+        //    - 使用orElseThrow()优雅地处理Optional为空的情况
+
         User user = findUserById(userId).orElseThrow(() -> new BusinessException(ErrorCode.IDENTIFIER_NOT_FOUND));
+
+        // 7. 生成新的令牌对
+        //    调用jwtService.issueTokenPair()方法生成全新的令牌对
+        //    生成的令牌对包含：
+        //    - 新的访问令牌（accessToken）：有效期15分钟
+        //    - 新的刷新令牌（refreshToken）：有效期7天
+        //    - 新的令牌ID（refreshTokenId）：全新的UUID
+        //    - 新的过期时间：从当前时间重新计算
+        //    令牌轮换机制：
+        //    - 每次刷新都生成全新的令牌对
+        //    - 旧令牌和新令牌的ID完全不同
+        //    - 旧令牌在下一步会被立即撤销
+        //    - 新令牌在下一步会被加入白名单
         TokenPair tokenPair = jwtService.issueTokenPair(user);
+
+        // 8. 撤销旧刷新令牌（令牌轮换的关键步骤）
+        //    从Redis白名单中删除旧的刷新令牌，使其立即失效
+        //    refreshTokenStore.revokeToken()执行的操作：
+        //    - 构建Redis键：auth:rt:{userId}:{tokenId}
+        //    - 执行删除命令：DEL auth:rt:12345:550e8400-...
+        //    - 返回删除结果（成功或失败）
+        //
+        //    令牌撤销的时机：
+        //    - 在生成新令牌之后立即执行
+        //    - 确保新旧令牌不会同时有效
+        //    - 实现原子性的令牌轮换
+        //
+        //    安全意义：
+        //    - 旧令牌立即失效，无法再次使用
+        //    - 防止令牌重复使用（重放攻击）
+        //    - 实现一次性令牌机制
+        //    - 提高系统的安全性
+        //
+        //    注意事项：
+        //    - 如果撤销失败（Redis异常），新令牌仍然有效
+        //    - 但旧令牌可能在短时间内仍然有效
+        //    - 需要确保Redis的高可用性
         refreshTokenStore.revokeToken(userId, tokenId);
+
+        // 9. 存储新刷新令牌到白名单
+        //    将新生成的刷新令牌存储到Redis白名单中，使其可用于下次刷新
+        //    storeRefreshToken()执行的操作：
+        //    - 计算新令牌的TTL（剩余有效时间）
+        //    - 构建Redis键：auth:rt:{userId}:{newTokenId}
+        //    - 执行存储命令：SETEX auth:rt:12345:new-token-id 604800 "1"
+        //    - 设置TTL为7天（604800秒）
+        //
+        //    存储新令牌的目的：
+        //    - 新令牌加入白名单，可用于下次刷新
+        //    - 实现令牌的持续轮换
+        //    - 保持用户的登录状态
+        //    - 支持无感知的令牌续期
+        //
+        //    TTL计算：
+        //    - 从当前时间到新令牌过期时间的时长
+        //    - 与令牌的过期时间保持一致
+        //    - Redis会自动清理过期的令牌
         storeRefreshToken(userId, tokenPair);
 
+        // 10. 返回新令牌响应
+        //     将新的令牌对转换为TokenResponse对象返回给客户端
+        //     mapToken()执行的操作：
+        //     - 提取访问令牌字符串
+        //     - 提取刷新令牌字符串
+        //     - 提取过期时间戳
+        //     - 构建TokenResponse对象
+        //
+        //     返回的响应格式：
+        //     {
+        //       "accessToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+        //       "tokenType": "Bearer",
+        //       "expiresAt": 1717500900,
+        //       "refreshToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+        //       "refreshExpiresAt": 1718105700
+        //     }
+        //
+        //     客户端处理：
+        //     - 更新本地存储的访问令牌
+        //     - 更新本地存储的刷新令牌
+        //     - 使用新的访问令牌继续访问API
+        //     - 下次刷新时使用新的刷新令牌
         return mapToken(tokenPair);
     }
 
@@ -352,15 +492,91 @@ public SendCodeResponse sendCode(SendCodeRequest request) {
      *
      * @param refreshToken 刷新令牌字符串；若解析为合法刷新令牌则撤销其白名单记录。
      */
-    public void logout(String refreshToken) {
-        decodeRefreshTokenSafely(refreshToken).ifPresent(jwt -> {
-            if (Objects.equals("refresh", jwtService.extractTokenType(jwt))) {
-                long userId = jwtService.extractUserId(jwt);
-                String tokenId = jwtService.extractTokenId(jwt);
-                refreshTokenStore.revokeToken(userId, tokenId);
-            }
-        });
-    }
+/**
+ * 用户登出：撤销指定的刷新令牌，使其无法再用于刷新访问令牌。
+ * <p>
+ * 功能说明：实现用户登出功能，通过撤销刷新令牌来终止用户的登录状态。
+ * 该方法采用安全解码和类型验证的方式，确保只撤销有效的刷新令牌。
+ * <p>
+ * 登出机制：
+ * - 撤销刷新令牌：从Redis白名单中删除刷新令牌
+ * - 访问令牌自然过期：访问令牌有效期短（如15分钟），会自动失效
+ * - 不需要立即撤销访问令牌：访问令牌无法续期，自然过期即可
+ * <p>
+ * 安全设计：
+ * - 使用安全解码：解码失败不会抛出异常，而是返回Optional.empty()
+ * - 类型验证：检查令牌类型，确保只撤销刷新令牌
+ * - 幂等性：多次调用同一令牌的登出操作是安全的
+ * - 容错性：即使令牌无效，也不会影响系统正常运行
+ * <p>
+ * 使用场景：
+ * - 用户主动登出：用户点击登出按钮
+ * - 安全登出：用户关闭浏览器或切换账号
+ * - 令牌撤销：管理员撤销特定令牌
+ * - 异常处理：令牌异常时的清理操作
+ * <p>
+ * 登出效果：
+ * - 刷新令牌立即失效，无法获取新的访问令牌
+ * - 当前访问令牌继续有效，直到自然过期
+ * - 用户需要重新登录才能获取新的令牌对
+ * - 所有使用该刷新令牌的客户端都会被登出
+ *
+ * @param refreshToken 刷新令牌字符串，用于标识要撤销的令牌
+ *                     如果为null或格式错误，方法会安全地忽略
+ *                     如果令牌已过期或已撤销，方法会安全地忽略
+ */
+public void logout(String refreshToken) {
+    // 1. 安全解码刷新令牌
+    //    使用decodeRefreshTokenSafely方法进行解码，该方法的特点：
+    //    - 解码失败时返回Optional.empty()，而不是抛出异常
+    //    - 解码成功时返回Optional.of(jwt)
+    //    - 使用Optional模式，避免NullPointerException
+    //
+    //    decodeRefreshTokenSafely的内部实现：
+    //    try {
+    //        return Optional.of(jwtService.decode(refreshToken));
+    //    } catch (JwtException ex) {
+    //        return Optional.empty();  // 解码失败，返回空Optional
+    //    }
+    //
+    //    可能的解码失败情况：
+    //    - refreshToken为null或空字符串
+    //    - JWT格式错误
+    //    - 签名验证失败
+    //    - 令牌已过期
+    //    - 令牌未生效
+    //
+    //    使用Optional的优势：
+    //    - 链式调用，代码简洁
+    //    - 避免空指针异常
+    //    - 明确表达可能为空的情况
+    //    - 函数式编程风格
+    decodeRefreshTokenSafely(refreshToken).ifPresent(jwt -> {
+
+        // 2. 验证令牌类型
+        //    检查JWT中的token_type声明是否为"refresh"
+        //    使用Objects.equals的优势：
+        //    - 避免NullPointerException：即使extractTokenType返回null也不会出错
+        //    - 类型安全：正确处理null值的情况
+        //    - 语义清晰：明确表示值的比较
+        if (Objects.equals("refresh", jwtService.extractTokenType(jwt))) {
+
+            // 3. 提取用户ID
+            long userId = jwtService.extractUserId(jwt);
+
+            // 4. 提取令牌ID
+            //    从JWT声明中提取jti（JWT ID）声明
+            //    令牌ID是刷新令牌的唯一标识符
+            String tokenId = jwtService.extractTokenId(jwt);
+
+            // 5. 撤销刷新令牌
+            //    从Redis白名单中删除指定的刷新令牌
+            //    令牌撤销后，无法再用于刷新访问令牌
+            refreshTokenStore.revokeToken(userId, tokenId);
+        }
+    });
+}
+
 
     /**
      * 使用验证码重置密码并使刷新令牌失效。

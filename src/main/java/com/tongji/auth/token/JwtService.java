@@ -229,6 +229,9 @@ public class JwtService {
      */
     public long extractUserId(Jwt jwt) {
         Object claim = jwt.getClaims().get(CLAIM_USER_ID);
+//         * 由于JWT声明中的值类型可能因编码方式不同而有所差异，该方法支持两种常见类型：
+// * - Number类型：直接转换为long（如12345）
+// * - String类型：解析为long（如"12345"）
         if (claim instanceof Number number) {
             return number.longValue();
         }
