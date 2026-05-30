@@ -82,22 +82,43 @@ public class KnowPostServiceImpl implements KnowPostService {
     }
     /**
      * 创建草稿并返回新 ID。
+     *  * 草稿状态说明：
+     *  * - status: "draft" 表示草稿状态，未公开发布
+     *  * - type: "image_text" 表示图文类型，支持图片和文字内容
+     *  * - visible: "public" 表示可见性为公开（草稿阶段不生效）
+     *  * - isTop: false 表示不置顶
      */
     @Transactional
     public long createDraft(long creatorId) {
+        //雪花算法生成唯一ID
+        //    - 避免数据库自增ID的单点问题
+        //    - 支持分布式部署，多台机器同时生成ID
+        //    - ID包含时间信息，可以按时间排序
+        //    - 性能高，不需要访问数据库
         long id = idGen.nextId();
+        // 2. 获取当前时间戳
         Instant now = Instant.now();
+
         KnowPost post = KnowPost.builder()
-                .id(id)
-                .creatorId(creatorId)
-                .status("draft")
-                .type("image_text")
-                .visible("public")
-                .isTop(false)
-                .createTime(now)
-                .updateTime(now)
+                .id(id)                  // 设置帖子ID
+                .creatorId(creatorId)    // 设置创建者ID
+                .status("draft")         // 设置状态为草稿
+                .type("image_text")      // 设置类型为图文
+                .visible("public")       // 设置可见性为公开
+                .isTop(false)            // 设置不置顶
+                .createTime(now)         // 设置创建时间
+                .updateTime(now)         // 设置更新时间
                 .build();
+
         mapper.insertDraft(post);
+
+        // 5. 返回草稿ID
+        //    返回新创建的草稿ID
+        //    调用者可以使用此ID进行后续操作：
+        //    - 编辑草稿内容
+        //    - 上传图片
+        //    - 发布草稿
+        //    - 删除草稿
         return id;
     }
 

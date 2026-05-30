@@ -34,6 +34,7 @@ public class KnowPostController {
     @PostMapping("/drafts")
     public KnowPostDraftCreateResponse createDraft(@AuthenticationPrincipal Jwt jwt) {
         long userId = jwtService.extractUserId(jwt);
+        //雪花算法id
         long id = service.createDraft(userId);
         return new KnowPostDraftCreateResponse(String.valueOf(id));
     }
@@ -45,7 +46,9 @@ public class KnowPostController {
     public ResponseEntity<Void> confirmContent(@PathVariable("id") long id,
                                                @Valid @RequestBody KnowPostContentConfirmRequest request,
                                                @AuthenticationPrincipal Jwt jwt) {
+        //jwt中提取用户id
         long userId = jwtService.extractUserId(jwt);
+
         service.confirmContent(userId, id, request.objectKey(), request.etag(), request.size(), request.sha256());
         return ResponseEntity.noContent().build();
     }
