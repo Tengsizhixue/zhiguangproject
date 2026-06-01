@@ -38,13 +38,19 @@ import java.util.concurrent.ThreadLocalRandom;
 public class KnowPostServiceImpl implements KnowPostService {
 
     private final KnowPostMapper mapper;
-    @Resource
     private final SnowflakeIdGenerator idGen;
     private final ObjectMapper objectMapper;
     private final OssProperties ossProperties;
     private final CounterService counterService;
     private final UserCounterService userCounterService;
     private final StringRedisTemplate redis;
+    //什么是 @Qualifier？
+    //翻译过来叫“限定符”。在 Spring 仓库里，像 Mapper、Redis 这种东西往往只有一个。
+    // 但是！Cache<String, ...>（本地缓存）这个东西，系统里可能配置了好多个（比如有存用户信息的缓存、有存帖子详情的缓存）。
+    //Spring 的困惑：当 Spring 看到大管家要一个 Cache 时，
+    // 它懵了：“仓库里有 5 个不同的 Cache，你要哪一个？”
+    //破局：所以程序员用 @Qualifier("knowPostDetailCache")
+    // 明确指着 Spring 的鼻子说：“我只要名字叫 knowPostDetailCache 的那一个，别拿错了！”
     @Qualifier("knowPostDetailCache")
     private final Cache<String, KnowPostDetailResponse> knowPostDetailCache;
     private final HotKeyDetector hotKey;
@@ -130,6 +136,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         // 缓存双删
         invalidateCache(id);
 
+        //拼接OSS对象
         KnowPost post = KnowPost.builder()
                 .id(id)
                 .creatorId(creatorId)
@@ -137,10 +144,12 @@ public class KnowPostServiceImpl implements KnowPostService {
                 .contentEtag(etag)
                 .contentSize(size)
                 .contentSha256(sha256)
+                // 生成公共 URL
                 .contentUrl(publicUrl(objectKey))
                 .updateTime(Instant.now())
                 .build();
-
+//防御性编程：直接在 UPDATE 语句中加上了条件（WHERE id = ? AND creator_id = ?）。
+// 如果更新行数为 0，说明要么帖子不存在，要么当前登录的人不是这篇帖子的作者（没权限）。
         int updated = mapper.updateContent(post);
         if (updated == 0) {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "草稿不存在或无权限");
@@ -149,6 +158,8 @@ public class KnowPostServiceImpl implements KnowPostService {
         invalidateCache(id);
 
         // 触发一次预索引（草稿阶段可能因可见性/状态被跳过）
+        //因为大模型的向量索引服务可能网络超时,
+        //TODO 没看懂rag
         try {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
@@ -184,6 +195,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
 
         // 元数据变更后写入 Outbox 事件，驱动搜索索引更新
+        //TODO 没看懂
         try {
             long outId = idGen.nextId();
             String payload = objectMapper.writeValueAsString(Map.of("entity", "knowpost", "op", "upsert", "id", id));
@@ -207,6 +219,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         }
         try {
             userCounterService.incrementPosts(creatorId, 1);
+            //就算 Redis 挂了、计数失败了，也不影响帖子发布成功的核心结果。
         } catch (Exception ignored) {}
 
         // 写入 Outbox 事件，驱动搜索索引增量更新

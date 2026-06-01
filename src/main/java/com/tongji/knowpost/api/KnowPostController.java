@@ -10,6 +10,8 @@ import com.tongji.knowpost.api.dto.FeedPageResponse;
 import com.tongji.knowpost.service.KnowPostService;
 import com.tongji.knowpost.service.KnowPostFeedService;
 import com.tongji.knowpost.api.dto.KnowPostDetailResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/knowposts")
 @Validated
 @RequiredArgsConstructor
+@Tag(name = "知识帖子", description = "知识帖子相关接口")
 public class KnowPostController {
 
     private final KnowPostService service;
@@ -31,6 +34,7 @@ public class KnowPostController {
     /**
      * 创建草稿，返回新 ID。默认类型为 image_text。
      */
+    @Operation(summary = "创建草稿", description = "创建知识帖子草稿，返回新 ID。默认类型为 image_text。")
     @PostMapping("/drafts")
     public KnowPostDraftCreateResponse createDraft(@AuthenticationPrincipal Jwt jwt) {
         long userId = jwtService.extractUserId(jwt);
@@ -42,6 +46,7 @@ public class KnowPostController {
     /**
      * 上传内容成功后回传确认，写入对象存储信息。
      */
+    @Operation(summary = "确认内容上传", description = "确认知识帖子内容上传，写入对象存储信息。")
     @PostMapping("/{id}/content/confirm")
     public ResponseEntity<Void> confirmContent(@PathVariable("id") long id,
                                                @Valid @RequestBody KnowPostContentConfirmRequest request,

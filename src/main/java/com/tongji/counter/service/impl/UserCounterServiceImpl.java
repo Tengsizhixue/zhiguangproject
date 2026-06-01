@@ -132,6 +132,9 @@ public class UserCounterServiceImpl implements UserCounterService {
         });
     }
 
+
+//    原子地修改 Redis String 中某个固定偏移位置的 4 字节整数,总共20字节，每个字段4字节（32位整数）（关注数、粉丝数、发文数、获赞数、获收藏数）
+//todo 这段代码暂时应该不需要知道，因为只需要调用 RedisScript.execute 方法即可
     private static final String INCR_FIELD_LUA = """
             
             local cntKey = KEYS[1]

@@ -63,7 +63,11 @@ public class SecurityConfig {
                                 "/api/v1/auth/login",
                                 "/api/v1/auth/token/refresh",
                                 "/api/v1/auth/logout",
-                                "/api/v1/auth/password/reset"
+                                "/api/v1/auth/password/reset",
+                                // ---------- 下面是新增的 Swagger 白名单 ----------
+                                "/v3/api-docs/**",     // 放行获取 JSON 格式接口数据的请求
+                                "/swagger-ui/**",      // 放行 Swagger 的前端页面资源
+                                "/swagger-ui.html"     // 放行 Swagger 的入口页面
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
