@@ -199,8 +199,8 @@ swagger:
   title: "智光项目实战接口文档"
   description: "这是一款用于学习的平台"
   version: "1.0.0"
-  contact-name: "小策"
-  contact-email: "1792424075@qq.com"
+  contact-name: "林"
+  contact-email: "tengsizhixue@qq.com"
 
 #mp配置
 mybatis-plus:

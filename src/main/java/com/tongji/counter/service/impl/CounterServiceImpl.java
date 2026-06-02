@@ -134,6 +134,7 @@ public class CounterServiceImpl implements CounterService {
      * 获取实体计数汇总（SDS）。
      * 若缺失或结构异常则触发基于位图的事实重建，并清理对应聚合字段。
      */
+    //TODO 待了解SDS的固定结构
     @Override
     public Map<String, Long> getCounts(String entityType, String entityId, List<String> metrics) {
         String sdsKey = CounterKeys.sdsKey(entityType, entityId);
