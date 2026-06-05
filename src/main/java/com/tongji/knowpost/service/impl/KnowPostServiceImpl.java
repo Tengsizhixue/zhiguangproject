@@ -18,6 +18,7 @@ import com.tongji.storage.config.OssProperties;
 import com.tongji.llm.rag.RagIndexService;
 import com.tongji.relation.mapper.OutboxMapper;
 import com.tongji.cache.hotkey.HotKeyDetector;
+import com.tongji.search.index.SearchIndexService;
 import jakarta.annotation.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +59,7 @@ public class KnowPostServiceImpl implements KnowPostService {
     private final ConcurrentHashMap<String, Object> singleFlight = new ConcurrentHashMap<>();
     private final RagIndexService ragIndexService;
     private final OutboxMapper outboxMapper;
+    private final SearchIndexService searchIndexService;
 
     // 手动编写构造器，Spring的@Qualifier直接标注在参数上（核心）
     public KnowPostServiceImpl(
@@ -71,7 +73,8 @@ public class KnowPostServiceImpl implements KnowPostService {
             @Qualifier("knowPostDetailCache") Cache<String, KnowPostDetailResponse> knowPostDetailCache,
             HotKeyDetector hotKey,
             RagIndexService ragIndexService,
-            OutboxMapper outboxMapper
+            OutboxMapper outboxMapper,
+            SearchIndexService searchIndexService
     ) {
         this.mapper = mapper;
         this.idGen = idGen;
@@ -84,6 +87,7 @@ public class KnowPostServiceImpl implements KnowPostService {
         this.hotKey = hotKey;
         this.ragIndexService = ragIndexService;
         this.outboxMapper = outboxMapper;
+        this.searchIndexService = searchIndexService;
     }
 
     /**
@@ -230,6 +234,13 @@ public class KnowPostServiceImpl implements KnowPostService {
             ragIndexService.ensureIndexed(id);
         } catch (Exception e) {
             log.warn("Pre-index after publish failed, post {}: {}", id, e.getMessage());
+        }
+
+        // 直接写入 ES 搜索索引，确保发布后立即可搜（无需依赖 Canal→Kafka 管道）
+        try {
+            searchIndexService.upsertKnowPost(id);
+        } catch (Exception e) {
+            log.warn("Direct ES index after publish failed, post {}: {}", id, e.getMessage());
         }
     }
 

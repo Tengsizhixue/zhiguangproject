@@ -69,8 +69,9 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
     }
 
     /**
-     * 生成公共 Feed 页面的缓存 Key（包含分页与布局版本）。
-     * @param page 页码（1 起）
+     * 生成公共 Feed 页面的全局统一缓存 Key（包含分页与布局版本）。
+     * 💡 架构师修正：L1 和 L2 统一使用此逻辑，不再做人为的时间割裂。
+     * * @param page 页码（1 起）
      * @param size 每页大小
      * @return Redis/Page 缓存的 Key
      */
@@ -81,104 +82,122 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
     /**
      * 获取公开的首页 Feed（按发布时间倒序，不受置顶影响）。
      * 采用三级缓存：本地 Caffeine、Redis 页面缓存、Redis 片段缓存（ids/item/count）。
-     * @param page 页码（≥1）
+     * * @param page 页码（≥1）
      * @param size 每页数量（1~50）
      * @param currentUserIdNullable 当前用户 ID（为空表示匿名）
-     * @return 带分页信息的 Feed 列表（liked/faved 为用户维度）
+     * @return 带分页信息的 Feed 列表（liked/faved 为当前请求维度的私人状态）
      */
+    @Override
     public FeedPageResponse getPublicFeed(int page, int size, Long currentUserIdNullable) {
         int safeSize = Math.min(Math.max(size, 1), 50);
         int safePage = Math.max(page, 1);
-        // 这个 localPageKey 是本地缓存的页面 Key（非 Redis）
+
+        // 💡 全局干净缓存的 Key（绝对不包含用户私有维度）
         String localPageKey = cacheKey(safePage, safeSize);
 
-        // 按小时分片的片段缓存键：降低跨小时内容更新导致的大面积失效风险
-        // 将分页维度（size/page）与时间维度（hourSlot）组合，避免热门页在整站失效时同时回源
-        long hourSlot = System.currentTimeMillis() / 3600000L;
-        String idsKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage;
-        String hasMoreKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage + ":hasMore";
+        // 💡 架构师安全修复 1：彻底铲除 hourSlot（时间分片）！
+        // 放弃容易导致整点雪崩的 Time-Bucket 反模式，直接使用精准的分页维度。
+        // 雪崩防护交由底层的 TTL Jitter（随机抖动）来负责。
+        String idsKey = "feed:public:ids:" + safeSize + ":" + safePage;
+        String hasMoreKey = idsKey + ":hasMore";
 
-        // L1: 先从本地缓存拿数据，高并发时抗 80% 流量
+        // ==========================================
+        // 🛡️ L1: 本地缓存拦截 (Caffeine)
+        // ⚠️ 生产架构建议：Feed 流的 L1 Cache 过期时间应配置为极短（如 3~5 秒）
+        // ==========================================
         FeedPageResponse local = feedPublicCache.getIfPresent(localPageKey);
-
         if (local != null && local.items() != null) {
-            // 对返回列表中的每个条目进行热度统计
             for (FeedItemResponse item : local.items()) {
                 recordItemHotKey(item.id());
             }
-
             log.info("feed.public source=local localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
-            List<FeedItemResponse> enrichedLocal = enrich(local.items(), currentUserIdNullable);
 
+            // 【核心防御】：缓存里拿出来的永远是绝对干净的公共数据
+            // 返回前，单独为当前请求的用户实时叠加私人状态（如：是否点赞）
+            List<FeedItemResponse> enrichedLocal = enrich(local.items(), currentUserIdNullable);
             return new FeedPageResponse(enrichedLocal, local.page(), local.size(), local.hasMore());
         }
 
-        // L2: 二级缓存，Redis 片段缓存，组装
-        FeedPageResponse fromCache = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
-        if (fromCache != null) {
-            feedPublicCache.put(localPageKey, fromCache);
-            // 对返回列表中的每个条目进行热度统计
-            if (fromCache.items() != null) {
-                for (FeedItemResponse item : fromCache.items()) {
+        // ==========================================
+        // 🛡️ L2: Redis 缓存拦截
+        // ==========================================
+        // 💡 架构师安全修复 2 (动静分离)：强制传入 null 获取干净数据！
+        // 绝不将带有某个用户私人状态的数据塞入全局 L2 和 L1 缓存，杜绝越权泄露！
+        FeedPageResponse cleanFromL2 = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, null);
+        if (cleanFromL2 != null) {
+            feedPublicCache.put(localPageKey, cleanFromL2); // 存入 L1 的是干净数据
+
+            if (cleanFromL2.items() != null) {
+                for (FeedItemResponse item : cleanFromL2.items()) {
                     recordItemHotKey(item.id());
                 }
             }
             log.info("feed.public source=3tier localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
-            return fromCache;
+
+            // 组装当前用户的私人状态并返回给前端
+            List<FeedItemResponse> enrichedL2 = enrich(cleanFromL2.items(), currentUserIdNullable);
+            return new FeedPageResponse(enrichedL2, cleanFromL2.page(), cleanFromL2.size(), cleanFromL2.hasMore());
         }
 
-        // 当上述两级缓存都没有数据，说明需要回源查数据库
-        // 为了防止高并发下（例如 1000 个请求同时访问同一页）
-        // 所有请求同时打到数据库（造成 缓存击穿 ），这里使用了锁
-        // 单航班机制：以 idsKey 作为“航班号”
-        // 并发下同一页只允许一个请求回源数据库，其余在锁内优先重查缓存，避免击穿惊群
+        // ==========================================
+        // 🛡️ L3: 数据库回源 (SingleFlight 防击穿锁)
+        // ==========================================
         Object lock = singleFlight.computeIfAbsent(idsKey, k -> new Object());
         synchronized (lock) {
-            // 重查 L2 缓存，避免重复回源
-            FeedPageResponse again = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
-            if (again != null) {
-                feedPublicCache.put(localPageKey, again);
-                // 对返回列表中的每个条目进行热度统计
-                if (again.items() != null) {
-                    for (FeedItemResponse item : again.items()) {
-                        recordItemHotKey(item.id());
+            try {
+                // 💡 架构师安全修复 3：使用 try-finally 保护区，确保锁的绝对释放
+
+                // Double-Check：排队进门后的二次检查 (同样传入 null 确保数据干净)
+                FeedPageResponse againClean = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, null);
+                if (againClean != null) {
+                    feedPublicCache.put(localPageKey, againClean);
+                    if (againClean.items() != null) {
+                        for (FeedItemResponse item : againClean.items()) {
+                            recordItemHotKey(item.id());
+                        }
                     }
+                    log.info("feed.public source=3tier(after-flight) localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+
+                    List<FeedItemResponse> enrichedAgain = enrich(againClean.items(), currentUserIdNullable);
+                    return new FeedPageResponse(enrichedAgain, againClean.page(), againClean.size(), againClean.hasMore());
                 }
-                log.info("feed.public source=3tier(after-flight) localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+
+                // 真正去查 MySQL 数据库：读取 size+1 以判断是否有下一页
+                int offset = (safePage - 1) * safeSize;
+                List<KnowPostFeedRow> rows = mapper.listFeedPublic(safeSize + 1, offset);
+                boolean hasMore = rows.size() > safeSize;
+                if (hasMore) {
+                    rows = rows.subList(0, safeSize);
+                }
+
+                // 构建基础干净列表（liked/faved 置为 null 以免污染缓存）
+                List<FeedItemResponse> cleanItems = mapRowsToItems(rows, null, false);
+                FeedPageResponse respForCache = new FeedPageResponse(cleanItems, safePage, safeSize, hasMore);
+
+                // 💡 架构师雪崩防护：缓存 TTL 叠加随机抖动 (Jitter)
+                // 用这行代码完美替代原来的 hourSlot 分片机制
+                int baseTtl = 60;
+                int jitter = ThreadLocalRandom.current().nextInt(30);
+                Duration frTtl = Duration.ofSeconds(baseTtl + jitter);
+
+                // 写入片段缓存与本地缓存 (此处写入的 respForCache 绝对纯净)
+                writeCaches(localPageKey, idsKey, hasMoreKey, safeSize, rows, cleanItems, hasMore, frTtl);
+                feedPublicCache.put(localPageKey, respForCache);
+
+                log.info("feed.public source=db localPageKey={} page={} size={} hasMore={}", localPageKey, safePage, safeSize, hasMore);
+
+                // 最后一步：为当前请求的用户叠加私人维度状态，然后返回
+                List<FeedItemResponse> enriched = enrich(cleanItems, currentUserIdNullable);
+                return new FeedPageResponse(enriched, safePage, safeSize, hasMore);
+
+            } finally {
+                // 💡 架构师安全修复 3 (终章)：无论查库是否超时、抛出异常
+                // finally 会保证闸门钥匙一定被销毁，彻底杜绝死锁与 OOM 内存泄漏！
                 singleFlight.remove(idsKey);
-                return again;
             }
-
-            // 数据库回源：读取 size+1 以判断是否有下一页，后裁剪为当前页
-            int offset = (safePage - 1) * safeSize;
-            List<KnowPostFeedRow> rows = mapper.listFeedPublic(safeSize + 1, offset);
-            boolean hasMore = rows.size() > safeSize;
-            if (hasMore) {
-                rows = rows.subList(0, safeSize);
-            }
-
-            // 构建基础列表（计数已填充），liked/faved 置为 null 以免污染用户维度缓存
-            List<FeedItemResponse> items = mapRowsToItems(rows, null, false);
-
-            FeedPageResponse respForCache = new FeedPageResponse(items, safePage, safeSize, hasMore);
-            // 片段缓存（ids/item/count）TTL 更长并加入随机抖动，降低同一时刻大量过期
-            int baseTtl = 60;
-            int jitter = ThreadLocalRandom.current().nextInt(30);
-            Duration frTtl = Duration.ofSeconds(baseTtl + jitter);
-
-            // 写入片段缓存与本地缓存
-            writeCaches(localPageKey, idsKey, hasMoreKey, safeSize, rows, items, hasMore, frTtl);
-            feedPublicCache.put(localPageKey, respForCache);
-
-            // 返回时覆盖用户维度状态，不写回缓存
-            List<FeedItemResponse> enriched = enrich(items, currentUserIdNullable);
-            log.info("feed.public source=db localPageKey={} page={} size={} hasMore={}", localPageKey, safePage, safeSize, hasMore);
-            // 释放单航班锁，允许后续请求正常进入
-            singleFlight.remove(idsKey);
-
-            return new FeedPageResponse(enriched, safePage, safeSize, hasMore);
         }
     }
+
 
     /**
      * 记录单个内容条目的热度，并尝试延长其相关片段缓存的 TTL。
@@ -509,3 +528,113 @@ public class KnowPostFeedServiceImpl implements KnowPostFeedService {
         }
     }
 }
+
+///**
+//     * 获取公开的首页 Feed（按发布时间倒序，不受置顶影响）。
+//     * 采用三级缓存：本地 Caffeine、Redis 页面缓存、Redis 片段缓存（ids/item/count）。
+//     * @param page 页码（≥1）
+//     * @param size 每页数量（1~50）
+//     * @param currentUserIdNullable 当前用户 ID（为空表示匿名）
+//     * @return 带分页信息的 Feed 列表（liked/faved 为用户维度）
+//     */
+//    public FeedPageResponse getPublicFeed(int page, int size, Long currentUserIdNullable) {
+//        int safeSize = Math.min(Math.max(size, 1), 50);
+//        int safePage = Math.max(page, 1);
+//        // 这个 localPageKey 是本地缓存的页面 Key（非 Redis）
+//        String localPageKey = cacheKey(safePage, safeSize);
+//
+//        // 按小时分片的片段缓存键：降低跨小时内容更新导致的大面积失效风险
+//        // 将分页维度（size/page）与时间维度（hourSlot）组合，避免热门页在整站失效时同时回源
+//        long hourSlot = System.currentTimeMillis() / 3600000L;
+//        String idsKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage;
+//        String hasMoreKey = "feed:public:ids:" + safeSize + ":" + hourSlot + ":" + safePage + ":hasMore";
+//
+//        // L1: 先从本地缓存拿数据，高并发时抗 80% 流量
+//        FeedPageResponse local = feedPublicCache.getIfPresent(localPageKey);
+//
+//        if (local != null && local.items() != null) {
+//            // 对返回列表中的每个条目进行热度统计
+//            for (FeedItemResponse item : local.items()) {
+//                recordItemHotKey(item.id());
+//            }
+//
+//            log.info("feed.public source=local localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+//            List<FeedItemResponse> enrichedLocal = enrich(local.items(), currentUserIdNullable);
+//
+//            return new FeedPageResponse(enrichedLocal, local.page(), local.size(), local.hasMore());
+//        }
+//
+//        // L2: 二级缓存，Redis 片段缓存，组装
+//        FeedPageResponse fromCache = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
+//        if (fromCache != null) {
+//            feedPublicCache.put(localPageKey, fromCache);
+//            // 对返回列表中的每个条目进行热度统计
+//            if (fromCache.items() != null) {
+//                for (FeedItemResponse item : fromCache.items()) {
+//                    recordItemHotKey(item.id());
+//                }
+//            }
+//            log.info("feed.public source=3tier localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+//            return fromCache;
+//        }
+//
+//        // 当上述两级缓存都没有数据，说明需要回源查数据库
+//        // 为了防止高并发下（例如 1000 个请求同时访问同一页）
+//        // 所有请求同时打到数据库（造成 缓存击穿 ），这里使用了锁
+//        // 单航班机制：以 idsKey 作为“航班号”
+//        // 并发下同一页只允许一个请求回源数据库，其余在锁内优先重查缓存，避免击穿惊群
+//        Object lock = singleFlight.computeIfAbsent(idsKey, k -> new Object());
+//        synchronized (lock) {
+//            // 重查 L2 缓存，避免重复回源
+//            FeedPageResponse again = assembleFromCache(idsKey, hasMoreKey, safePage, safeSize, currentUserIdNullable);
+//            if (again != null) {
+//                feedPublicCache.put(localPageKey, again);
+//                // 对返回列表中的每个条目进行热度统计
+//                if (again.items() != null) {
+//                    for (FeedItemResponse item : again.items()) {
+//                        recordItemHotKey(item.id());
+//                    }
+//                }
+//                log.info("feed.public source=3tier(after-flight) localPageKey={} page={} size={}", localPageKey, safePage, safeSize);
+//                singleFlight.remove(idsKey);
+//                return again;
+//            }
+//
+//            // 数据库回源：读取 size+1 以判断是否有下一页，后裁剪为当前页
+//            int offset = (safePage - 1) * safeSize;
+//            List<KnowPostFeedRow> rows = mapper.listFeedPublic(safeSize + 1, offset);
+//            boolean hasMore = rows.size() > safeSize;
+//            if (hasMore) {
+//                rows = rows.subList(0, safeSize);
+//            }
+//
+//            // 构建基础列表（计数已填充），liked/faved 置为 null 以免污染用户维度缓存
+//            List<FeedItemResponse> items = mapRowsToItems(rows, null, false);
+//
+//            FeedPageResponse respForCache = new FeedPageResponse(items, safePage, safeSize, hasMore);
+//            // 片段缓存（ids/item/count）TTL 更长并加入随机抖动，降低同一时刻大量过期
+//            int baseTtl = 60;
+//            int jitter = ThreadLocalRandom.current().nextInt(30);
+//            Duration frTtl = Duration.ofSeconds(baseTtl + jitter);
+//
+//            // 写入片段缓存与本地缓存
+//            writeCaches(localPageKey, idsKey, hasMoreKey, safeSize, rows, items, hasMore, frTtl);
+//            feedPublicCache.put(localPageKey, respForCache);
+//
+//            // 返回时覆盖用户维度状态，不写回缓存
+//            List<FeedItemResponse> enriched = enrich(items, currentUserIdNullable);
+//            log.info("feed.public source=db localPageKey={} page={} size={} hasMore={}", localPageKey, safePage, safeSize, hasMore);
+//            // 释放单航班锁，允许后续请求正常进入
+//            singleFlight.remove(idsKey);
+//
+//            return new FeedPageResponse(enriched, safePage, safeSize, hasMore);
+//        }
+//    }    /**
+//     * 生成公共 Feed 页面的缓存 Key（包含分页与布局版本）。
+//     * @param page 页码（1 起）
+//     * @param size 每页大小
+//     * @return Redis/Page 缓存的 Key
+//     */
+//    private String cacheKey(int page, int size) {
+//        return "feed:public:" + size + ":" + page + ":v" + LAYOUT_VER;
+//    }

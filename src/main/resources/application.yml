@@ -91,7 +91,7 @@ spring:
     uris: ${config.es.uri}
 
 canal:
-  enabled: false
+  enabled: true
   host: ${config.canal.host}
   port: ${config.canal.port}
   #  这是 Canal 服务端里的一个核心概念。一个 Canal 服务可以同时监听多个 MySQL 实例。example 是默认的实例名。
