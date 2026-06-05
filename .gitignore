@@ -40,3 +40,15 @@ build/
 
 ### Application Config ###
 application-dev.yaml
+
+### Frontend (zhiguang_fe) ###
+zhiguang_fe/node_modules/
+zhiguang_fe/dist/
+zhiguang_fe/coverage/
+zhiguang_fe/.temp/
+zhiguang_fe/.tmp/
+zhiguang_fe/.env
+zhiguang_fe/.env.*.local
+zhiguang_fe/*.log
+zhiguang_fe/npm-debug.log*
+zhiguang_fe/.vite/
