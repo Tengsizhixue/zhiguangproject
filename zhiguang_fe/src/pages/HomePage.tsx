@@ -5,9 +5,11 @@ import CourseCard from "@/components/cards/CourseCard";
 import LikeFavBar from "@/components/common/LikeFavBar";
 import { knowpostService } from "@/services/knowpostService";
 import AuthStatus from "@/features/auth/AuthStatus";
+import { useAuth } from "@/context/AuthContext";
 import styles from "./HomePage.module.css";
 
 const HomePage = () => {
+  const { tokens } = useAuth();
   const [items, setItems] = useState<Array<{
     id: string;
     title: string;
@@ -32,7 +34,7 @@ const HomePage = () => {
       setLoading(true);
       setError(null);
       try {
-        const resp = await knowpostService.feed(1, 20);
+        const resp = await knowpostService.feed(1, 20, tokens?.accessToken ?? undefined);
         if (!cancelled) {
           setItems(resp.items ?? []);
         }
@@ -47,7 +49,7 @@ const HomePage = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [tokens?.accessToken]);
 
   return (
     <AppLayout
