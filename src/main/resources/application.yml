@@ -27,6 +27,16 @@ spring:
       port: ${config.redis.port}
       password: ${config.redis.password}
   kafka:
+#    发消息端（Producer）:
+#      acks=all ──→ 消息一定存到 Kafka
+#      retries=3 ──→ 网络抖动自动重试
+#      idempotence=true ──→ 重试不会产生重复
+#      max-in-flight=1 ──→ 保证消息顺序
+
+#    收消息端（Consumer）:
+#      enable-auto-commit=false ──→ 不自动确认
+#      ack-mode=manual ──→ 手动确认
+#      ack.acknowledge() ──→ 处理成功才确认，失败会重发
     bootstrap-servers: ${config.kafka.server}
     template:
       #      给一个默认的主题
@@ -37,9 +47,16 @@ spring:
       # 告诉 Kafka，“请把我的 Value（比如订单详情）用字符串规则转成二进制”
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       #   当生产者发送一条消息给 Kafka，Leader 节点收到后，必须等待所有 Follower（备份节点）都同步成功了，才敢给你的 Java 代码回话说是“发送成功”
+#      0	发出去就不管了，Kafka 收没收到不知道	❌ 最差	✅ 最快
+#      1	Leader 节点收到就算成功	⚠️ 中等	⚠️ 中等
+#      all	Leader + 所有 Follower 都收到才算成功	✅ 最高	❌ 稍慢
+
       acks: all
       retries: 3 # 重试次数
       #      在这 10ms 内如果有其他消息来了，就打包在一起，用一次网络请求发出去。这能极大提升性能。
+#      没有 linger：  点赞1 → 发网络请求 → 点赞2 → 发网络请求 → 点赞3 → 发网络请求
+#      有 linger：    点赞1 → 等10ms → 点赞2来了 → 点赞3来了 → 一起打包发一次网络请求 5
+
       linger: 10ms
       properties:
         #        因为上面开启了 retries（重试）。假设你发了一条消息，Kafka 收到了，
