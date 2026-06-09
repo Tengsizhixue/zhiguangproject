@@ -64,15 +64,18 @@ public class FeedCacheInvalidationListener {
      */
     @EventListener
     public void onCounterChanged(CounterEvent event) {
+        // 仅处理实体类型为 "knowpost" 的计数事件
         if (!"knowpost".equals(event.getEntityType())) {
             return;
         }
 
         String metric = event.getMetric();
+        // 只关注点赞(like)和收藏(fav)两种指标
         if ("like".equals(metric) || "fav".equals(metric)) {
             String eid = event.getEntityId();
             int delta = event.getDelta();
 
+            // 同步更新创作者的"收到的点赞/收藏"用户维度计数
             try {
                 KnowPost post = knowPostMapper.findById(Long.valueOf(eid));
                 if (post != null && post.getCreatorId() != null) {
@@ -87,36 +90,47 @@ public class FeedCacheInvalidationListener {
             } catch (Exception ignored) {
             }
 
+            // 计算当前小时槽位（用于反向索引定位）
             long hourSlot = System.currentTimeMillis() / 3600000L;
             Set<String> keys = new LinkedHashSet<>();
+
+            // 从当前小时的反向索引集合中获取受影响的页面键
             Set<String> cur = redis.opsForSet().members("feed:public:index:" + eid + ":" + hourSlot);
             if (cur != null) {
                 keys.addAll(cur);
             }
 
+            // 同时覆盖上一个小时段的反向索引，避免因时间边界导致漏更新
             Set<String> prev = redis.opsForSet().members("feed:public:index:" + eid + ":" + (hourSlot - 1));
             if (prev != null) {
                 keys.addAll(prev);
             }
+
+            // 若反向索引中没有任何页面键，则无需更新缓存
             if (keys.isEmpty()) {
                 return;
             }
 
+            // 遍历所有受影响的页面键，逐一更新缓存
             for (String key : keys) {
+                // 更新本地 Caffeine 缓存（保留 liked/faved 用户态标志）
                 FeedPageResponse local = feedPublicCache.getIfPresent(key);
                 if (local != null) {
                     FeedPageResponse updatedLocal = adjustPageCounts(local, eid, metric, delta, true);
                     feedPublicCache.put(key, updatedLocal);
                 }
 
+                // 更新 Redis 共享页面缓存
                 String cached = redis.opsForValue().get(key);
                 if (cached != null) {
                     try {
                         FeedPageResponse resp = objectMapper.readValue(cached, FeedPageResponse.class);
+                        // Redis 缓存不携带用户态标志（preserveUserFlags=false），避免污染共享数据
                         FeedPageResponse updated = adjustPageCounts(resp, eid, metric, delta, false);
                         writePageJsonKeepingTtl(key, updated);
                     } catch (Exception ignored) {}
                 } else {
+                    // 若 Redis 中已不存在该页面键，则清理索引中的无效引用，降低键空间噪音
                     redis.opsForSet().remove("feed:public:index:" + eid + ":" + hourSlot, key);
                 }
             }

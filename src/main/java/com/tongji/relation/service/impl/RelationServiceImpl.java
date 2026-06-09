@@ -75,31 +75,52 @@ public class RelationServiceImpl implements RelationService {
 
     /**
      * 关注操作，限流通过令牌桶，并写入 Outbox 以异步构建缓存与粉丝表。
+     *
+     * <p>执行流程：</p>
+     * <ol>
+     *   <li>Lua 令牌桶限流：以 "rl:follow:{fromUserId}" 为 key，容量100、速率1/s；
+     *       返回0表示令牌不足，直接拒绝；</li>
+     *   <li>生成雪花ID并写入 MySQL following 表（status=1 表示有效关注）；</li>
+     *   <li>写入成功后，异步投递 Outbox 事件 "FollowCreated"，
+     *       由消费者负责：同步粉丝表、重建 Redis ZSet 缓存、更新计数。</li>
+     * </ol>
+     *
      * @param fromUserId 发起关注的用户ID
      * @param toUserId 被关注的用户ID
-     * @return 是否关注成功
+     * @return 是否关注成功（false 表示被限流或插入失败）
      */
     @Override
     @Transactional
     public boolean follow(long fromUserId, long toUserId) {
-        // Lua 脚本令牌桶限流
+        // ── 第1步：Lua 脚本令牌桶限流 ──
+        // key: rl:follow:{fromUserId}，每个用户独立桶
+        // 参数 "100": 桶容量（突发允许100次），"1": 每秒补充1个令牌
+        // 返回 0L 表示令牌耗尽，直接拒绝请求
         Long ok = redis.execute(tokenScript, List.of("rl:follow:" + fromUserId), "100", "1");
         if (ok == 0L) {
             return false;
         }
 
+        // ── 第2步：生成雪花ID并写入 MySQL 关注关系表 ──
+        // 使用 ThreadLocalRandom 生成分布式唯一ID，避免时钟回拨问题
         long id = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
         int inserted = mapper.insertFollowing(id, fromUserId, toUserId, 1);
 
         if (inserted > 0) {
+            // ── 第3步：投递 Outbox 事件，异步驱动缓存与粉丝表更新 ──
+            // Outbox 模式保证：写库与发事件在同一事务内，消费者幂等处理
             try {
                 Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
-                String payload = objectMapper.writeValueAsString(new RelationEvent("FollowCreated", fromUserId, toUserId, id));
+                String payload = objectMapper.writeValueAsString(
+                        new RelationEvent("FollowCreated", fromUserId, toUserId, id));
                 outboxMapper.insert(outId, "following", id, "FollowCreated", payload);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+                // Outbox 写入失败不影响主流程，关注关系已持久化
+            }
 
             return true;
         }
+        // 插入失败（如重复关注等约束冲突），返回 false
         return false;
     }
 
