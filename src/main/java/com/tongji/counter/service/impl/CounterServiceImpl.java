@@ -40,6 +40,7 @@ public class CounterServiceImpl implements CounterService {
 
     private final StringRedisTemplate redis;
     private final DefaultRedisScript<Long> toggleScript;
+    private final DefaultRedisScript<Long> incrSdsScript;
     private final CounterEventProducer eventProducer;
     private final ApplicationEventPublisher eventPublisher;
     private final RedissonClient redisson;
@@ -63,6 +64,10 @@ public class CounterServiceImpl implements CounterService {
         this.toggleScript.setResultType(Long.class);
         // 位图状态原子切换，仅在状态变化时返回 1
         this.toggleScript.setScriptText(TOGGLE_LUA);
+
+        this.incrSdsScript = new DefaultRedisScript<>();
+        this.incrSdsScript.setResultType(Long.class);
+        this.incrSdsScript.setScriptText(INCR_FIELD_LUA);
     }
 
     /**
@@ -156,12 +161,29 @@ public class CounterServiceImpl implements CounterService {
         // 返回值含义：1L=状态翻转了（从没赞→赞了 / 从赞了→取消），0L=重复操作无需处理
         Long changed = redis.execute(toggleScript, keys, args.toArray());
         boolean ok = changed == 1L;
+        log.info("位图切换结果: key={}, bit={}, add={}, changed={}", bmKey, bit, add, ok);
 
         // ── 第4步：状态真正变化时才发布事件 ──
         if (ok) {
             // 增量：点赞 +1，取消点赞 -1
             int delta = add ? 1 : -1;
+
+            // 直接同步更新 SDS 计数器（Lua 原子操作，保证最终一致性）
+            try {
+                String sdsKey = CounterKeys.sdsKey(etype, eid);
+                redis.execute(incrSdsScript,
+                        List.of(sdsKey),
+                        String.valueOf(CounterSchema.SCHEMA_LEN),
+                        String.valueOf(CounterSchema.FIELD_SIZE),
+                        String.valueOf(idx),
+                        String.valueOf(delta));
+                log.info("SDS 同步更新成功: sdsKey={}, idx={}, delta={}", sdsKey, idx, delta);
+            } catch (Exception e) {
+                log.error("SDS 同步更新失败: etype={}, eid={}, idx={}, delta={}", etype, eid, idx, delta, e);
+            }
+
             CounterEvent event = CounterEvent.of(etype, eid, metric, idx, uid, delta);
+            log.info("准备发布计数事件: entityType={}, entityId={}, metric={}, delta={}", etype, eid, metric, delta);
 
 //            目的：Feed 流缓存里存着帖子的点赞数，点赞后需要立即更新缓存
             // ① Spring 本地事件 → 同进程内消费（优先保证用户体验）
@@ -657,5 +679,37 @@ public class CounterServiceImpl implements CounterService {
               return 1
             end
             return -1
+            """;
+
+    // SDS 字段原子增减（大端 Int32），用于同步更新计数汇总
+    private static final String INCR_FIELD_LUA = """
+            local cntKey = KEYS[1]
+            local schemaLen = tonumber(ARGV[1])
+            local fieldSize = tonumber(ARGV[2])
+            local idx = tonumber(ARGV[3])
+            local delta = tonumber(ARGV[4])
+            
+            local function read32be(s, off)
+              local b = {string.byte(s, off+1, off+4)}
+              local n = 0
+              for i=1,4 do n = n * 256 + b[i] end
+              return n
+            end
+            
+            local function write32be(n)
+              local t = {}
+              for i=4,1,-1 do t[i] = n % 256; n = math.floor(n/256) end
+              return string.char(unpack(t))
+            end
+            
+            local cnt = redis.call('GET', cntKey)
+            if not cnt then cnt = string.rep(string.char(0), schemaLen * fieldSize) end
+            local off = idx * fieldSize
+            local v = read32be(cnt, off) + delta
+            if v < 0 then v = 0 end
+            local seg = write32be(v)
+            cnt = string.sub(cnt, 1, off) .. seg .. string.sub(cnt, off+fieldSize+1)
+            redis.call('SET', cntKey, cnt)
+            return 1
             """;
 }

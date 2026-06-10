@@ -3,6 +3,8 @@ package com.tongji.counter.event;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tongji.counter.schema.CounterKeys;
 import com.tongji.counter.schema.CounterSchema;
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -22,6 +24,7 @@ import java.util.List;
  * - 以固定延迟定时任务将聚合增量折叠到 SDS 固定结构计数；
  * - 刷写成功后删除聚合字段，避免重复加算。
  */
+@Slf4j
 @Service
 public class CounterAggregationConsumer {
 
@@ -29,6 +32,7 @@ public class CounterAggregationConsumer {
     private final StringRedisTemplate redis;
     private final DefaultRedisScript<Long> incrScript;
     private final DefaultRedisScript<Long> decrScript;
+    private int flushTick;
 
     // 使用 Redis Hash 作为持久化聚合桶：agg:{schema}:{etype}:{eid} ，field=idx ，value=delta
     public CounterAggregationConsumer(ObjectMapper objectMapper, StringRedisTemplate redis) {
@@ -36,11 +40,16 @@ public class CounterAggregationConsumer {
         this.redis = redis;
         this.incrScript = new DefaultRedisScript<>();
         this.incrScript.setResultType(Long.class);
-        this.incrScript.setScriptText(INCR_FIELD_LUA); // 原子将增量折叠到 SDS 指定段（大端 32 位）
-        
+        this.incrScript.setScriptText(INCR_FIELD_LUA);
+
         this.decrScript = new DefaultRedisScript<>();
         this.decrScript.setResultType(Long.class);
         this.decrScript.setScriptText(DECR_FIELD_LUA);
+    }
+
+    @PostConstruct
+    public void init() {
+        log.info("CounterAggregationConsumer 初始化完成, 准备消费 topic={}", CounterTopics.EVENTS);
     }
 
     /**
@@ -48,17 +57,20 @@ public class CounterAggregationConsumer {
      * @param message 事件 JSON
      * @param ack 位点确认对象（手动提交）
      */
-    @KafkaListener(topics = CounterTopics.EVENTS, groupId = "counter-agg")
+    @KafkaListener(topics = CounterTopics.EVENTS)
     public void onMessage(String message, Acknowledgment ack) throws Exception {
+        log.info("收到Kafka计数事件: {}", message);
         CounterEvent evt = objectMapper.readValue(message, CounterEvent.class);
         String aggKey = CounterKeys.aggKey(evt.getEntityType(), evt.getEntityId());
         String field = String.valueOf(evt.getIdx());
         try {
             // 将增量持久化到 Redis Hash
             redis.opsForHash().increment(aggKey, field, evt.getDelta());
-            // 成功后提交位点，绑定“已持久化”语义
+            log.info("聚合桶更新成功: key={}, field={}, delta={}", aggKey, field, evt.getDelta());
+            // 成功后提交位点，绑定"已持久化"语义
             ack.acknowledge();
         } catch (Exception ex) {
+            log.error("处理计数事件失败: key={}, field={}, delta={}", aggKey, field, evt.getDelta(), ex);
             // 不提交位点以便重试
         }
     }
@@ -69,11 +81,17 @@ public class CounterAggregationConsumer {
      */
     @Scheduled(fixedDelay = 1000L)
     public void flush() {
+        flushTick++;
         // 简化实现：扫描所有聚合桶键（生产建议使用索引集合替代 KEYS）
         Set<String> keys = redis.keys("agg:" + CounterSchema.SCHEMA_ID + ":*");
         if (keys.isEmpty()) {
+            if (flushTick % 30 == 1) {
+                log.info("flush 心跳 #{}，当前无聚合桶待刷写", flushTick);
+            }
             return;
         }
+
+        log.info("开始刷写聚合桶，共 {} 个键", keys.size());
 
         for (String aggKey : keys) {
             Map<Object, Object> entries = redis.opsForHash().entries(aggKey);
@@ -87,6 +105,7 @@ public class CounterAggregationConsumer {
             }
 
             String cntKey = CounterKeys.sdsKey(parts[2], parts[3]);
+            log.info("刷写聚合桶: aggKey={}, cntKey={}, entries={}", aggKey, cntKey, entries);
 
             for (Map.Entry<Object, Object> e : entries.entrySet()) {
                 String field = String.valueOf(e.getKey());
@@ -112,10 +131,12 @@ public class CounterAggregationConsumer {
                             String.valueOf(CounterSchema.FIELD_SIZE),
                             String.valueOf(idx),
                             String.valueOf(delta));
+                    log.info("SDS刷写成功: cntKey={}, idx={}, delta={}", cntKey, idx, delta);
 
                     // 成功后扣减该字段，若结果为0则删除，避免并发写入丢失
                     redis.execute(decrScript, List.of(aggKey), field, String.valueOf(delta));
                 } catch (Exception ex) {
+                    log.error("SDS刷写失败: cntKey={}, idx={}, delta={}", cntKey, idx, delta, ex);
                     // 留存字段，下一轮重试
                 }
             }
@@ -124,6 +145,7 @@ public class CounterAggregationConsumer {
             Long size = redis.opsForHash().size(aggKey);
             if (size == 0L) {
                 redis.delete(aggKey);
+                log.info("聚合桶已清空并删除: {}", aggKey);
             }
         }
     }

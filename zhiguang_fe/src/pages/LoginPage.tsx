@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import type { LoginRequest } from "@/types/auth";
+import type { IdentifierType, LoginRequest } from "@/types/auth";
 import { authService } from "@/services/authService";
 import styles from "./LoginPage.module.css";
 
@@ -10,12 +10,14 @@ type LocationState = {
 };
 
 type LoginMode = "code" | "password";
+type AccountType = "phone" | "email";
 
 const LoginPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { login, isLoading, user } = useAuth();
   const [mode, setMode] = useState<LoginMode>("code");
+  const [accountType, setAccountType] = useState<AccountType>("phone");
   const [identifier, setIdentifier] = useState("");
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
@@ -25,6 +27,7 @@ const LoginPage = () => {
   const [countdown, setCountdown] = useState(0);
 
   const from = (location.state as LocationState | undefined)?.from ?? "/";
+  const identifierType: IdentifierType = accountType === "phone" ? "PHONE" : "EMAIL";
 
   useEffect(() => {
     if (!isLoading && user) {
@@ -45,8 +48,8 @@ const LoginPage = () => {
 
     try {
       const payload: LoginRequest = mode === "code"
-        ? { identifierType: "PHONE", identifier, code }
-        : { identifierType: "PHONE", identifier, password };
+        ? { identifierType, identifier, code }
+        : { identifierType, identifier, password };
       await login(payload);
       navigate(from, { replace: true });
     } catch (err) {
@@ -59,7 +62,7 @@ const LoginPage = () => {
 
   const handleSendCode = async () => {
     if (!identifier) {
-      setError("请先填写手机号");
+      setError(accountType === "phone" ? "请先填写手机号" : "请先填写邮箱");
       return;
     }
     setError(null);
@@ -67,7 +70,7 @@ const LoginPage = () => {
     try {
       const response = await authService.sendCode({
         scene: "LOGIN",
-        identifierType: "PHONE",
+        identifierType,
         identifier
       });
       setCountdown(Math.max(1, response.expireSeconds ?? 300));
@@ -79,6 +82,14 @@ const LoginPage = () => {
     }
   };
 
+  const handleAccountTypeChange = (type: AccountType) => {
+    setAccountType(type);
+    setIdentifier("");
+    setCode("");
+    setPassword("");
+    setError(null);
+  };
+
   const isDisabled = submitting || !identifier || (mode === "code" ? !code : !password);
 
   return (
@@ -87,6 +98,24 @@ const LoginPage = () => {
         <div className={styles.titleBlock}>
           <h1 className={styles.title}>欢迎回来</h1>
           <p className={styles.subtitle}>登录知光，与知识发光</p>
+        </div>
+
+        {/* 账号类型切换 */}
+        <div className={styles.tabRow}>
+          <button
+            type="button"
+            className={`${styles.tab} ${accountType === "phone" ? styles.tabActive : ""}`}
+            onClick={() => handleAccountTypeChange("phone")}
+          >
+            手机号
+          </button>
+          <button
+            type="button"
+            className={`${styles.tab} ${accountType === "email" ? styles.tabActive : ""}`}
+            onClick={() => handleAccountTypeChange("email")}
+          >
+            邮箱
+          </button>
         </div>
 
         {/* 登录方式切换 */}
@@ -110,16 +139,16 @@ const LoginPage = () => {
         <form className={styles.form} onSubmit={handleSubmit}>
           <div className={styles.field}>
             <label className={styles.label} htmlFor="identifier">
-              手机号
+              {accountType === "phone" ? "手机号" : "邮箱"}
             </label>
             <input
               id="identifier"
               className={styles.input}
               value={identifier}
               onChange={event => setIdentifier(event.target.value)}
-              placeholder="请输入手机号"
-              type="tel"
-              autoComplete="tel"
+              placeholder={accountType === "phone" ? "请输入手机号" : "请输入邮箱地址"}
+              type={accountType === "phone" ? "tel" : "email"}
+              autoComplete={accountType === "phone" ? "tel" : "email"}
             />
           </div>
 
@@ -146,7 +175,11 @@ const LoginPage = () => {
                   {countdown > 0 ? `${countdown}s` : "获取验证码"}
                 </button>
               </div>
-              <span className={styles.tips}>验证码将发送到您的手机，无需输入密码。</span>
+              <span className={styles.tips}>
+                {accountType === "phone"
+                  ? "验证码将发送到您的手机，无需输入密码。"
+                  : "验证码将发送到您的邮箱，无需输入密码。"}
+              </span>
             </div>
           ) : (
             <div className={styles.field}>

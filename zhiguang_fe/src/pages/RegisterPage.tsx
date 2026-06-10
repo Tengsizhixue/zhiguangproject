@@ -4,13 +4,14 @@ import { authService } from "@/services/authService";
 import { useAuth } from "@/context/AuthContext";
 import type { IdentifierType, RegisterRequest } from "@/types/auth";
 import styles from "./RegisterPage.module.css";
-// 注册方式固定为手机号
+
+type AccountType = "phone" | "email";
 
 const RegisterPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { register } = useAuth();
-  const identifierType: IdentifierType = "PHONE";
+  const [accountType, setAccountType] = useState<AccountType>("phone");
   const [identifier, setIdentifier] = useState("");
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
@@ -21,6 +22,8 @@ const RegisterPage = () => {
   const [sendingCode, setSendingCode] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const redirectTimerRef = useRef<number | null>(null);
+
+  const identifierType: IdentifierType = accountType === "phone" ? "PHONE" : "EMAIL";
 
   useEffect(() => {
     if (countdown <= 0) return;
@@ -38,7 +41,7 @@ const RegisterPage = () => {
 
   const handleSendCode = async () => {
     if (!identifier) {
-      setError("请先填写账号信息");
+      setError(accountType === "phone" ? "请先填写手机号" : "请先填写邮箱");
       return;
     }
     setError(null);
@@ -88,6 +91,15 @@ const RegisterPage = () => {
     }
   };
 
+  const handleAccountTypeChange = (type: AccountType) => {
+    setAccountType(type);
+    setIdentifier("");
+    setCode("");
+    setPassword("");
+    setError(null);
+    setMessage(null);
+  };
+
   const isDisabled = submitting || !identifier || !code || !password || !agreeTerms;
 
   return (
@@ -98,18 +110,38 @@ const RegisterPage = () => {
           <p className={styles.subtitle}>完成注册，与更多人分享你的知识</p>
         </div>
 
+        {/* 注册方式切换 */}
+        <div className={styles.tabRow}>
+          <button
+            type="button"
+            className={`${styles.tab} ${accountType === "phone" ? styles.tabActive : ""}`}
+            onClick={() => handleAccountTypeChange("phone")}
+          >
+            手机号注册
+          </button>
+          <button
+            type="button"
+            className={`${styles.tab} ${accountType === "email" ? styles.tabActive : ""}`}
+            onClick={() => handleAccountTypeChange("email")}
+          >
+            邮箱注册
+          </button>
+        </div>
+
         <form className={styles.form} onSubmit={handleSubmit}>
 
           <div className={styles.field}>
-            <label className={styles.label} htmlFor="identifier">手机号</label>
+            <label className={styles.label} htmlFor="identifier">
+              {accountType === "phone" ? "手机号" : "邮箱"}
+            </label>
             <input
               id="identifier"
               className={styles.input}
               value={identifier}
               onChange={event => setIdentifier(event.target.value)}
-              placeholder="请输入账号"
-              type="tel"
-              autoComplete="tel"
+              placeholder={accountType === "phone" ? "请输入手机号" : "请输入邮箱地址"}
+              type={accountType === "phone" ? "tel" : "email"}
+              autoComplete={accountType === "phone" ? "tel" : "email"}
             />
           </div>
 
@@ -135,7 +167,11 @@ const RegisterPage = () => {
                 {countdown > 0 ? `${countdown}s` : "获取验证码"}
               </button>
             </div>
-            <span className={styles.tips}>验证码用于验证账号所有权，有效期有限，请及时填写。</span>
+            <span className={styles.tips}>
+              {accountType === "phone"
+                ? "验证码将发送到您的手机，有效期有限，请及时填写。"
+                : "验证码将发送到您的邮箱，有效期有限，请及时填写。"}
+            </span>
           </div>
 
           <div className={styles.field}>
