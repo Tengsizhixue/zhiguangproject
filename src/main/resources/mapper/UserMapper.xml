@@ -97,7 +97,7 @@
         WHERE id = #{id}
     </update>
 
-    <update id="updateProfile" parameterType="com.tongji.user.domain.User">
+     <update id="updateProfile" parameterType="com.tongji.user.domain.User">
         UPDATE users
         <set>
             <if test="nickname != null">nickname = #{nickname},</if>

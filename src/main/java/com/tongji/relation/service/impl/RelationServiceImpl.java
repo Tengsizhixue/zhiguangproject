@@ -47,8 +47,6 @@ public class RelationServiceImpl implements RelationService {
     private final Cache<Long, List<Long>> flwsTopCache;
     private final Cache<Long, List<Long>> fansTopCache;
     private final UserMapper userMapper;
-    
-
     /**
      * 关系服务实现构造函数。
      * @param mapper 关系表数据访问
@@ -75,16 +73,14 @@ public class RelationServiceImpl implements RelationService {
 
     /**
      * 关注操作，限流通过令牌桶，并写入 Outbox 以异步构建缓存与粉丝表。
-     *
      * <p>执行流程：</p>
      * <ol>
      *   <li>Lua 令牌桶限流：以 "rl:follow:{fromUserId}" 为 key，容量100、速率1/s；
      *       返回0表示令牌不足，直接拒绝；</li>
-     *   <li>生成雪花ID并写入 MySQL following 表（status=1 表示有效关注）；</li>
+     *   <li>生成ID并写入 MySQL following 表（status=1 表示有效关注）；</li>
      *   <li>写入成功后，异步投递 Outbox 事件 "FollowCreated"，
      *       由消费者负责：同步粉丝表、重建 Redis ZSet 缓存、更新计数。</li>
      * </ol>
-     *
      * @param fromUserId 发起关注的用户ID
      * @param toUserId 被关注的用户ID
      * @return 是否关注成功（false 表示被限流或插入失败）
@@ -92,22 +88,46 @@ public class RelationServiceImpl implements RelationService {
     @Override
     @Transactional
     public boolean follow(long fromUserId, long toUserId) {
-        // ── 第1步：Lua 脚本令牌桶限流 ──
-        // key: rl:follow:{fromUserId}，每个用户独立桶
-        // 参数 "100": 桶容量（突发允许100次），"1": 每秒补充1个令牌
-        // 返回 0L 表示令牌耗尽，直接拒绝请求
+        // 令牌桶 vs 固定窗口的区别：
+        //   - 固定窗口：每秒严格限制N次，但窗口边界可能出现"双倍突发"
+        //   - 令牌桶：桶容量100（允许短时突发100次），速率1/s（长期平均每秒1次）
+        //     用户正常浏览时关注操作不会被误伤，但脚本刷关注会被持续限速
+        //
+        // Key:  rl:follow:{fromUserId}  → 每个用户独立一个桶，互不影响
+        // ARGV:
+        //   [1] "100" → 桶容量（最多积攒100个令牌，允许突发100次）
+        //   [2] "1"   → 补充速率（每秒补充1个令牌，长期限速1次/秒）
+        // 返回值：0L = 令牌耗尽（请求被拒绝），非0 = 令牌获取成功（放行）
         Long ok = redis.execute(tokenScript, List.of("rl:follow:" + fromUserId), "100", "1");
         if (ok == 0L) {
             return false;
         }
 
-        // ── 第2步：生成雪花ID并写入 MySQL 关注关系表 ──
         // 使用 ThreadLocalRandom 生成分布式唯一ID，避免时钟回拨问题
         long id = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
         int inserted = mapper.insertFollowing(id, fromUserId, toUserId, 1);
-
+//   - 核心思路：把「发消息」变成「写数据库」，利用 ACID 事务保证一致性
+        //   - 好处：following 表和 outbox 表在同一个 @Transactional 中，
+        //     要么都成功（提交），要么都失败（回滚），绝不会出现「关注写入了
+        //     但事件丢了」或「事件发了但关注没写入」的中间状态
+        //
+        // 完整异步链路（后续由基础设施自动完成）：
+        //   outbox 表 INSERT
+        //     → MySQL 产生 binlog 日志
+        //     → Canal（阿里CDC组件）伪装成从库拉取 binlog
+        //     → CanalKafkaBridge 解析后发送到 Kafka Topic: canal-outbox
+        //     → CanalOutboxConsumer（@KafkaListener）消费消息
+        //     → RelationEventProcessor.process() 处理业务：
+        //        ① 写入 follower 表（粉丝视角的关系记录）
+        //        ② 更新 Redis ZSet 缓存（uf:flws:{userId} / uf:fans:{userId}）
+        //        ③ 更新用户维度计数（关注数+1, 粉丝数+1）
+        //     → 消费者通过 setIfAbsent 去重键保证幂等，即使重复消费也不出错
+        //
+        // 为什么 Outbox 失败不抛异常？
+        //   - 关注关系（following 表）是核心数据，已经持久化成功
+        //   - Outbox 只是「异步通知」，失败了粉丝表/缓存会暂时不一致
+        //   - 后续可以通过对账任务修复，不能让通知失败阻断用户操作
         if (inserted > 0) {
-            // ── 第3步：投递 Outbox 事件，异步驱动缓存与粉丝表更新 ──
             // Outbox 模式保证：写库与发事件在同一事务内，消费者幂等处理
             try {
                 Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
@@ -133,15 +153,53 @@ public class RelationServiceImpl implements RelationService {
     @Override
     @Transactional
     public boolean unfollow(long fromUserId, long toUserId) {
+        // ═══════════════════════════════════════════════════════════
+        // 第1步：逻辑取消关注（MySQL 软删除）
+        // ═══════════════════════════════════════════════════════════
+        // cancelFollowing 不是物理 DELETE，而是将 rel_status 置为 0
+        // 好处：保留历史记录，支持关注关系时间线分析与对账
+        //
+        // 与 follow() 方法的关键差异：
+        //   - follow() 在写库前有 Lua 令牌桶限流，防止刷关注
+        //   - unfollow() 无限流——取消关注不需要防刷，
+        //     用户正常取关不会对系统造成压力，且限流反而影响体验
+        //   - follow() 生成新 ID 插入行，unfollow() 更新已有行
         int updated = mapper.cancelFollowing(fromUserId, toUserId);
+
         if (updated > 0) {
+            // ═══════════════════════════════════════════════════════════
+            // 第2步：投递 Outbox 事件，异步驱动缓存与数据清理
+            // ═══════════════════════════════════════════════════════════
+            // 事件类型：FollowCanceled（区别于 FollowCreated）
+            // 消费者 RelationEventProcessor 收到后会执行：
+            //   ① cancelFollower：逻辑取消 follower 表中的粉丝关系
+            //   ② ZREM uf:flws:{fromUserId}：从关注缓存 ZSet 中移除
+            //   ③ ZREM uf:fans:{toUserId}：从粉丝缓存 ZSet 中移除
+            //   ④ 关注数-1 / 粉丝数-1：通过 UserCounterService 更新 SDS 计数
+            //
+            // 注意 aggregate_id 传 null：
+            //   - 取消关注时不需要关联具体的 following 记录 ID，
+            //     消费者靠 fromUserId + toUserId 定位即可完成移除
+            //   - 而 follow 时传 id，是为了在 follower 表中复用同一个 ID
+            //
+            // 为什么 Outbox 失败不抛异常？
+            //   - 与 follow() 同理：核心数据（following 表）已更新成功
+            //   - Outbox 是异步通知，失败只会导致粉丝表/缓存暂时不一致
+            //   - 后续可通过调度任务扫描 rel_status=0 的记录对账修复
             try {
                 Long outId = ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
-                String payload = objectMapper.writeValueAsString(new RelationEvent("FollowCanceled", fromUserId, toUserId, null));
+                // 将对象序列化为 JSON 字符串，作为 Outbox 事件负载
+                String payload = objectMapper.writeValueAsString(
+                        new RelationEvent("FollowCanceled", fromUserId, toUserId, null));
                 outboxMapper.insert(outId, "following", null, "FollowCanceled", payload);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+                // Outbox 写入失败不影响主流程，取消关注已生效
+            }
             return true;
         }
+        // 更新行数为 0 的可能原因：
+        //   - 根本没有关注过该用户（fromUserId 与 toUserId 无关注关系）
+        //   - 已经取消过了（rel_status 已经是 0，再次取消不产生变更）
         return false;
     }
 
@@ -208,9 +266,13 @@ public class RelationServiceImpl implements RelationService {
      */
     @Override
     public Map<String, Boolean> relationStatus(long userId, long otherUserId) {
+        // 当前用户是否关注了对方
         boolean following = isFollowing(userId, otherUserId);
+        // 对方是否关注了当前用户（调换参数顺序即可复用同一方法）
         boolean followedBy = isFollowing(otherUserId, userId);
+        // 互相关注 = 双向都关注
         boolean mutual = following && followedBy;
+        // 使用 LinkedHashMap 保证返回字段的顺序稳定（following → followedBy → mutual）
         Map<String, Boolean> m = new LinkedHashMap<>();
         m.put("following", following);
         m.put("followedBy", followedBy);
@@ -360,7 +422,20 @@ public class RelationServiceImpl implements RelationService {
     }
 
     /**
-     * 游标分页读取：按分数（毫秒时间戳）倒序读取；未命中时回填满足所需范围的数据并继续读取。
+     * 游标分页读取：按 ZSet 分数（毫秒时间戳）倒序读取。
+     * <p>
+     * 与传统 OFFSET 分页不同，游标分页使用上一页最后一条的 score 作为起点，
+     * 避免了“扫描并丢弃前 N 行”的性能浪费，任意深度的分页性能一致。
+     * <p>
+     * 读取优先级：Redis ZSet 缓存命中 → 直接返回；未命中 → DB 回填缓存后重试。
+     *
+     * @param key        Redis ZSet 键名
+     * @param limit      每页返回数量上限
+     * @param cursor     游标（上一页末条的时间戳毫秒），为 {@code null} 表示第一页
+     * @param rowsFetcher 数据库查询函数，入参为需要的记录数，返回以 {@code idField} 为键的行映射
+     * @param idField    行映射中作为 ZSet member 的字段名
+     * @param tsField    行映射中作为 ZSet score 的字段名（毫秒时间戳）
+     * @return 用户 ID 列表（按时间倒序）
      */
     private List<Long> getListWithCursor(String key,
                                          int limit,
@@ -369,22 +444,32 @@ public class RelationServiceImpl implements RelationService {
                                          String idField,
                                          String tsField) {
 
+        // 确定 ZREVRANGEBYSCORE 的分数上限：
+        // - 第一页（cursor == null）：上限为 +∞，即读取最新的 limit 条
+        // - 后续分页：上限为上一页最后一条的 score（不含自身），实现“从此时间点继续往前翻”
         double max = cursor == null ? Double.POSITIVE_INFINITY : cursor.doubleValue();
+        // 从 Redis ZSet 中按 score 倒序读取 [Double.NEGATIVE_INFINITY, max) 区间的前 limit 条
         Set<String> cached = redis.opsForZSet().reverseRangeByScore(key, Double.NEGATIVE_INFINITY, max, 0, limit);
 
+        // 缓存命中：ZSet 中已有足够数据，直接返回，无需访问数据库
         if (cached != null && !cached.isEmpty()) {
             return toLongList(cached);
         }
 
+        // 缓存未命中：需要从数据库回填。回填数量取 limit 和 100 的较大值（至少 100 条），
+        // 但不超过 1000 条上限，既保证后续几页大概率命中缓存，又避免一次性拉取过多数据压垮 DB。
         int need = Math.max(limit, 100);
         Map<Long, Map<String, Object>> rows = rowsFetcher.apply(Math.min(need, 1000));
 
         if (rows != null && !rows.isEmpty()) {
+            // 将数据库查询结果批量回填到 Redis ZSet，并设置 2 小时 TTL（自动过期清理冷数据）
             fillZSet(key, rows, idField, tsField, cursor);
             redis.expire(key, Duration.ofHours(2));
+            // 回填完成后再次从 ZSet 读取，保证返回给调用方的数据与直接命中缓存的格式一致
             Set<String> filled = redis.opsForZSet().reverseRangeByScore(key, Double.NEGATIVE_INFINITY, max, 0, limit);
             return filled == null ? Collections.emptyList() : toLongList(filled);
         }
+        // 数据库也无数据，返回空列表
         return Collections.emptyList();
     }
 

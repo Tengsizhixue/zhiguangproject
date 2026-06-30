@@ -83,6 +83,7 @@ public class ProfileServiceImpl implements ProfileService {
 
         // 知光号唯一性校验：仅在提交且非空时检查（排除自己）
         if (req.zgId() != null && !req.zgId().isBlank()) {
+            // 校验知光号是否已存在（排除当前用户）
             boolean exists = userMapper.existsByZgIdExceptId(req.zgId(), current.getId());
 
             if (exists) {

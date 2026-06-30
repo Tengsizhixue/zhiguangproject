@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
 /**
- * 搜索索引初始化：应用启动时确保索引与 Mapping 存在。
+ * 应用启动时，自动检查 Elasticsearch 索引是否存在，不存在就建一个，并配置好每个字段的分词策略。
  * 注意：title/body 使用 IK 分词器，需在 ES 集群安装 analysis-ik 插件。
  */
 @Service
@@ -29,7 +29,8 @@ public class SearchIndexInitializer {
             if (exists) {
                 return;
             }
-
+            // 创建索引，逐字段配置 Mapping：title 和 body 用 IK 分词器（ik_max_word 做索引、ik_smart 做搜索），
+            // tags/status 用 keyword（精确匹配），like_count 用 integer 支持排序
             es.indices().create(c -> c.index(INDEX).mappings(m -> m
                     .properties("content_id", Property.of(p -> p.long_(LongNumberProperty.of(b -> b))))
                     .properties("content_type", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))

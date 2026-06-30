@@ -21,12 +21,11 @@ public final class OutboxMessageUtil {
     /**
      * 从 Canal 消息中提取 outbox 表的变更行。
      *
-     * <p>仅处理：</p>
-     * <ul>
-     *   <li>table = outbox</li>
-     *   <li>type ∈ {INSERT, UPDATE}</li>
-     *   <li>data 为数组（每个元素是一行记录的列集合）</li>
-     * </ul>
+     * 仅处理：
+     *
+     *   table = outbox
+     *   type ∈ {INSERT, UPDATE}
+     *   data 为数组（每个元素是一行记录的列集合）
      *
      * @param objectMapper Jackson 解析器
      * @param message Canal JSON 消息
