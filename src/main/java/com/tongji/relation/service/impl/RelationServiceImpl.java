@@ -73,14 +73,13 @@ public class RelationServiceImpl implements RelationService {
 
     /**
      * 关注操作，限流通过令牌桶，并写入 Outbox 以异步构建缓存与粉丝表。
-     * <p>执行流程：</p>
-     * <ol>
-     *   <li>Lua 令牌桶限流：以 "rl:follow:{fromUserId}" 为 key，容量100、速率1/s；
-     *       返回0表示令牌不足，直接拒绝；</li>
-     *   <li>生成ID并写入 MySQL following 表（status=1 表示有效关注）；</li>
-     *   <li>写入成功后，异步投递 Outbox 事件 "FollowCreated"，
-     *       由消费者负责：同步粉丝表、重建 Redis ZSet 缓存、更新计数。</li>
-     * </ol>
+     * 执行流程：
+     *
+     *   Lua 令牌桶限流：以 "rl:follow:{fromUserId}" 为 key，容量100、速率1/s；
+     *       返回0表示令牌不足，直接拒绝；
+     *   生成ID并写入 MySQL following 表（status=1 表示有效关注）；
+     *   写入成功后，异步投递 Outbox 事件 "FollowCreated"，
+     *       由消费者负责：同步粉丝表、重建 Redis ZSet 缓存、更新计数。
      * @param fromUserId 发起关注的用户ID
      * @param toUserId 被关注的用户ID
      * @return 是否关注成功（false 表示被限流或插入失败）
@@ -423,10 +422,10 @@ public class RelationServiceImpl implements RelationService {
 
     /**
      * 游标分页读取：按 ZSet 分数（毫秒时间戳）倒序读取。
-     * <p>
+     *
      * 与传统 OFFSET 分页不同，游标分页使用上一页最后一条的 score 作为起点，
      * 避免了“扫描并丢弃前 N 行”的性能浪费，任意深度的分页性能一致。
-     * <p>
+     *
      * 读取优先级：Redis ZSet 缓存命中 → 直接返回；未命中 → DB 回填缓存后重试。
      *
      * @param key        Redis ZSet 键名

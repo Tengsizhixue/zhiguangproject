@@ -9,6 +9,8 @@ import co.elastic.clients.elasticsearch._types.mapping.LongNumberProperty;
 import co.elastic.clients.elasticsearch._types.mapping.Property;
 import co.elastic.clients.elasticsearch._types.mapping.TextProperty;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
@@ -19,6 +21,7 @@ import jakarta.annotation.PostConstruct;
 @Service
 @RequiredArgsConstructor
 public class SearchIndexInitializer {
+    private static final Logger log = LoggerFactory.getLogger(SearchIndexInitializer.class);
     private final ElasticsearchClient es;
     private static final String INDEX = "zhiguang_content_index";
 
@@ -52,8 +55,8 @@ public class SearchIndexInitializer {
                     .properties("is_top", Property.of(p -> p.keyword(KeywordProperty.of(b -> b))))
                     .properties("title_suggest", Property.of(p -> p.completion(CompletionProperty.of(b -> b)))
                     )));
-        } catch (Exception ignored) {
-            // 忽略异常以保证应用启动；索引可能由后续写入动态创建，但 Mapping 将不完整
+        } catch (Exception e) {
+            log.error("自动创建 Elasticsearch 索引失败，请检查 ES 配置或 IK 分词器插件是否安装!", e);
         }
     }
 }

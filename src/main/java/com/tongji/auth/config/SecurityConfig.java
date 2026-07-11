@@ -32,7 +32,7 @@ public class SecurityConfig {
     /**
      * 配置 Spring Security 过滤链。
      *
-     * <p>主要包含：</p>
+     * 主要包含：
      * - 关闭 CSRF；
      * - 启用 CORS；
      * - 使用无状态会话策略；
@@ -46,10 +46,15 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
+                // 1. 关闭 CSRF — 因为是纯 API 后端，使用 JWT，不需要 CSRF 防护
                 .csrf(AbstractHttpConfigurer::disable)
+                // 2. 启用 CORS — 允许前端跨域请求
                 .cors(Customizer.withDefaults())
+                // 3. 无状态会话 — 不创建 HttpSession，每次请求都靠 JWT 认证
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // 4. 接口权限控制
                 .authorizeHttpRequests(auth -> auth
+                        // 这些接口不需要登录即可访问：
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         // 公开内容：首页 Feed 不需要登录
                         .requestMatchers("/api/v1/knowposts/feed").permitAll()
@@ -71,6 +76,7 @@ public class SecurityConfig {
                                 "/swagger-ui/**",      // 放行 Swagger 的前端页面资源
                                 "/swagger-ui.html"     // 放行 Swagger 的入口页面
                         ).permitAll()
+                        // 其余所有接口都需要认证
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()));

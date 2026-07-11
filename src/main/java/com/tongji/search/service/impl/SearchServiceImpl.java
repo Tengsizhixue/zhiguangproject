@@ -134,8 +134,8 @@ public class SearchServiceImpl implements SearchService {
                         // ========== 高亮 ==========
                         // 返回 title 和 body 中匹配关键词的上下文片段，用 <em> 标签包裹
                         .highlight(h -> h
-                                .fields(new NamedValue<>("title", new HighlightField.Builder().build()))
-                                .fields(new NamedValue<>("body", new HighlightField.Builder().build()))
+                                .fields(new NamedValue<>("title", HighlightField.of(f -> f)))
+                                .fields(new NamedValue<>("body", HighlightField.of(f -> f)))
                         )
                         .sort(sorts);
                 // ========== 游标分页 ==========

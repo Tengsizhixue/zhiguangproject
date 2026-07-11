@@ -8,8 +8,8 @@ import lombok.Data;
  */
 @Data
 public class ActionRequest {
-    @NotBlank
+    @NotBlank(message = "实体类型不能为空")
     private String entityType; // 如: knowpost
-    @NotBlank
+    @NotBlank(message = "实体ID不能为空")
     private String entityId;   // 内容ID
 }

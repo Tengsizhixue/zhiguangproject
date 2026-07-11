@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -64,6 +65,7 @@ import com.tongji.knowpost.model.KnowPostFeedRow;
  */
 @Service
 @RequiredArgsConstructor
+@DependsOn("searchIndexInitializer")
 public class SearchIndexService {
     private static final Logger log = LoggerFactory.getLogger(SearchIndexService.class);
     // ES 索引名称，所有知文数据写入同一个索引，通过 content_type 字段区分内容类型

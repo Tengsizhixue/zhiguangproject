@@ -29,10 +29,16 @@ import java.util.concurrent.TimeUnit;
 /**
  * 内容实体计数服务实现（位图事实 + 事件聚合 + SDS 汇总）。
  *
+ * <p>写入链路（单一路径，避免 double-counting）：</p>
+ * toggle() → 位图翻转（Lua 原子） → Kafka 事件 → CounterAggregationConsumer → Hash 聚合桶 → flush 定时刷入 SDS
+ *
+ * <p>读取链路：</p>
+ * getCounts() → 读取 SDS 固定结构 → SDS 缺失/损坏时从位图分片重建
+ *
  * <p>职责：</p>
  * - 位图原子切换并产出计数事件（幂等）；
  * - 读取汇总计数（SDS），异常时基于位图分片重建；
- * - 批量读取优化与“是否点赞/收藏”判定。
+ * - 批量读取优化与"是否点赞/收藏"判定。
  */
 @Slf4j
 @Service
@@ -40,7 +46,6 @@ public class CounterServiceImpl implements CounterService {
 
     private final StringRedisTemplate redis;
     private final DefaultRedisScript<Long> toggleScript;
-    private final DefaultRedisScript<Long> incrSdsScript;
     private final CounterEventProducer eventProducer;
     private final ApplicationEventPublisher eventPublisher;
     private final RedissonClient redisson;
@@ -64,10 +69,6 @@ public class CounterServiceImpl implements CounterService {
         this.toggleScript.setResultType(Long.class);
         // 位图状态原子切换，仅在状态变化时返回 1
         this.toggleScript.setScriptText(TOGGLE_LUA);
-
-        this.incrSdsScript = new DefaultRedisScript<>();
-        this.incrSdsScript.setResultType(Long.class);
-        this.incrSdsScript.setScriptText(INCR_FIELD_LUA);
     }
 
     /**
@@ -80,6 +81,7 @@ public class CounterServiceImpl implements CounterService {
      */
     @Override
     public boolean like(String entityType, String entityId, long userId) {
+        //传入的参数分别为：实体类型、实体ID、用户ID、操作类型（like）、索引位（IDX_LIKE）、是否点赞（true）
         return toggle(entityType, entityId, userId, "like", CounterSchema.IDX_LIKE, true);
     }
 
@@ -110,16 +112,19 @@ public class CounterServiceImpl implements CounterService {
 
     /**
      * 位图状态切换（点赞/收藏 核心方法）。
-     * <p>
+     *
      * 设计要点：
-     * <ol>
-     *   <li><b>幂等保证</b>：仅在位图状态真正翻转（0→1 或 1→0）时才产出事件，
-     *       重复调用不会产生重复计数，天然幂等</li>
-     *   <li><b>原子操作</b>：Redis Lua 脚本将 GETBIT + SETBIT 打包为原子操作，
-     *       避免并发下的竞态条件（如 A 读到旧状态时 B 已经修改）</li>
-     *   <li><b>双通道事件</b>：Kafka 事件服务跨进程消费（计数聚合、异步落库），
-     *       本地 Spring Event 服务同进程快速路径（缓存失效、Feed 实时更新）</li>
-     * </ol>
+     *
+     *   幂等保证：仅在位图状态真正翻转（0→1 或 1→0）时才产出事件，
+     *       重复调用不会产生重复计数，天然幂等。
+     *   原子操作：Redis Lua 脚本将 GETBIT + SETBIT 打包为原子操作，
+     *       避免并发下的竞态条件（如 A 读到旧状态时 B 已经修改）
+     *   单一路径写入 SDS：toggle 不直接写 SDS，只发 Kafka 事件，
+     *       由 CounterAggregationConsumer 消费 → 聚合桶 → flush 定时刷入 SDS，
+     *       避免同步写和 Kafka 异步刷写两条路径 double-counting。
+     *   双通道事件：Kafka 事件 → 跨进程消费（计数聚合、最终刷入 SDS），
+     *       本地 Spring Event → 同进程快速路径（缓存失效、Feed 实时更新）
+     *
      * @param etype  实体类型（如 "knowpost"，对应数据库表维度）
      * @param eid    实体 ID（如 "12345"，对应具体某条帖子）
      * @param uid    用户 ID（谁在点赞/收藏）
@@ -127,26 +132,27 @@ public class CounterServiceImpl implements CounterService {
      * @param idx    指标在 SDS 固定结构中的字节索引（CounterSchema.IDX_LIKE=1, IDX_FAV=2）
      * @param add    true=点赞/收藏（SETBIT → 1），false=取消点赞/收藏（SETBIT → 0）
      * @return true=状态发生了实际翻转（从没赞→赞了，或从赞了→取消），false=重复操作无变化
-     *      *存储层	        存什么	             查询什么	                 谁来维护
-     *      * 位图分片	用户维度的点赞事实	isLiked？（当前用户是否点过）	toggle 方法直接写
-     *      * SDS	汇总后的总计数	        getCounts()（帖子总共多少赞）	Kafka 消费者异步聚合
-     *      * Feed 缓存	页面级的响应快照	    首页 Feed 列表	            本地监听器实时更新
+     *      *存储层         存什么                  查询什么                  谁来维护
+     *      * 位图分片      用户维度的点赞事实       isLiked？（当前用户是否点过） toggle 方法直接写
+     *      * SDS           汇总后的总计数           getCounts()（帖子总共多少赞） Kafka 消费者异步聚合
+     *      * Feed 缓存     页面级的响应快照         首页 Feed 列表             本地监听器实时更新
      */
+    //传入的参数分别为：实体类型、实体ID、用户ID、操作类型（like/fav）、索引位（IDX_LIKE/IDX_FAV）、是否点赞/收藏（true/false）
     private boolean toggle(String etype, String eid, long uid, String metric, int idx, boolean add) {
         // ── 第1步：位图分片定位 ──
         // 按用户ID计算所属分片（chunk），避免单个 Redis Key 存储所有用户导致大Key问题
-        // 例如：每 65536 个用户一个分片，100万用户 ≈ 16个分片，每个分片仅占 8KB
+        // 例如：每 32768 个用户一个分片，每个分片仅占 4KB
 //        位图已经存了，它存的是「谁点了赞」这个事实
 //        但上层业务还需要两个东西：
 //        快速拿到总点赞数（显示在列表页）→ 需要 SDS 汇总 → Kafka 负责异步聚合
 //        点赞后立刻让用户看到新计数（体验）→ 需要本地事件即时更新 Feed 缓存
         long chunk = BitmapShard.chunkOf(uid);
-        // 计算用户在该分片内的 bit 偏移，即用户在 65536 个 bit 中的第几位
+        // 计算用户在该分片内的 bit 偏移，即用户在 32768 个 bit 中的第几位
         long bit = BitmapShard.bitOf(uid);
 
         // ── 第2步：组装 Redis Key 和 Lua 脚本参数 ──
         // Key 格式：bm:{metric}:{etype}:{eid}:{chunk}
-        // 例如：bm:like:knowpost:12345:0  →  帖子12345的第0号分片（用户0~65535）
+        // 例如：bm:like:knowpost:12345:0  →  帖子12345的第0号分片（用户0~32767）
         String bmKey = CounterKeys.bitmapKey(metric, etype, eid, chunk);
         // KEYS[] 数组：Lua 脚本中要操作的 Redis Key 列表（此处只有一个位图 Key）
         List<String> keys = List.of(bmKey);
@@ -168,47 +174,21 @@ public class CounterServiceImpl implements CounterService {
             // 增量：点赞 +1，取消点赞 -1
             int delta = add ? 1 : -1;
 
-            // 直接同步更新 SDS 计数器（Lua 原子操作，保证最终一致性）
-            try {
-                String sdsKey = CounterKeys.sdsKey(etype, eid);
-                redis.execute(incrSdsScript,
-                        List.of(sdsKey),
-                        String.valueOf(CounterSchema.SCHEMA_LEN),
-                        String.valueOf(CounterSchema.FIELD_SIZE),
-                        String.valueOf(idx),
-                        String.valueOf(delta));
-                log.info("SDS 同步更新成功: sdsKey={}, idx={}, delta={}", sdsKey, idx, delta);
-            } catch (Exception e) {
-                log.error("SDS 同步更新失败: etype={}, eid={}, idx={}, delta={}", etype, eid, idx, delta, e);
-            }
-
             CounterEvent event = CounterEvent.of(etype, eid, metric, idx, uid, delta);
             log.info("准备发布计数事件: entityType={}, entityId={}, metric={}, delta={}", etype, eid, metric, delta);
 
-//            目的：Feed 流缓存里存着帖子的点赞数，点赞后需要立即更新缓存
-            // ① Spring 本地事件 → 同进程内消费（优先保证用户体验）
-            //    监听器：FeedCacheInvalidationListener，负责实时更新 Feed 缓存中的计数
-            //    不经过网络，比 Kafka 路径更快，用户体验更实时
+            // ① Spring 本地事件 → 同进程内消费，实时更新 Feed 缓存中的计数
+            //    监听器：FeedCacheInvalidationListener，不经过网络，用户体验更实时
             try {
                 eventPublisher.publishEvent(event);
             } catch (Exception e) {
                 log.error("本地缓存刷新事件发送失败, eid:{}", eid, e);
             }
 
-            // ② Kafka 事件 → 跨进程消费（允许失败，发件箱模式补偿）
-            //    消费者：CounterAggregationConsumer，负责更新 Redis 聚合桶 → 最终刷入 SDS
+            // ② Kafka 事件 → 跨进程消费，唯一写入 SDS 的路径
+            //    消费者：CounterAggregationConsumer → 聚合桶（Hash）→ flush 定时刷入 SDS
             //    Kafka 分区 Key 为 entityType + entityId，保证同一实体的消息有序消费
-//            100万用户 → ~16个分片 → 需要 16 次网络往返
-//            Feed 列表页一次返回 20 个帖子 → 320 次 BITCOUNT，性能崩盘
-//            有了 SDS：
-//
-//            一次 GET 拿到整个字节数组 → O(1) 读取所有指标
-//            批量读取 20 个帖子用管道 → 一次往返搞定
-//            为什么用 Kafka 异步聚合：
-//
-//            点赞是高并发操作，直接同步写 SDS 会加锁竞争延迟
-//            Kafka 削峰填谷，多个点赞增量攒在一起批量刷入
-//            保证最终一致性，不影响主请求延迟
+            //    为什么不在 toggle 里同步写 SDS？避免和 Kafka 聚合路径 double-counting
             try {
                 eventProducer.publish(event);
             } catch (Exception e) {
@@ -306,7 +286,7 @@ public class CounterServiceImpl implements CounterService {
             boolean locked = false;
 
             try {
-                // 等待最多 200ms，锁租期 3s（比原来看门狗更可控）
+                // 等待最多 200ms，锁租期 3s
                 // 为什么等待 200ms？因为正常重建（BITCOUNT 管道）通常 50ms 内完成，
                 // 200ms 给了 4 倍余量，覆盖绝大多数重建场景，排队线程能等到结果
                 // 为什么租期 3s？防止极端情况锁不释放，3s 后自动过期兜底
@@ -422,21 +402,21 @@ public class CounterServiceImpl implements CounterService {
 
     /**
      * 批量获取实体计数（Redis 管道批量 GET，将 N 次网络往返合并为 1 次）。
-     * <p>
-     * <b>为什么需要批量方法？</b><br>
+     *
+     * 为什么需要批量方法？
      * Feed 列表页一次展示 20 条帖子，如果逐条调用 {@link #getCounts} 会产生 20 次 Redis 网络往返，
      * 在用户量大的情况下延迟不可接受。管道批量 GET 将所有请求打包，一次往返全部拿到。
-     * <p>
-     * <b>与 getCounts 的区别：</b><br>
+     *
+     * 与 getCounts 的区别：
      * 批量方法不做 SDS 重建（不在循环里触发 BITCOUNT 风暴），缺失的按 0 返回。
      * 重建逻辑留给 {@link #getCounts} 单条调用时触发，保证热点数据最终会被修复。
-     * <p>
-     * <b>Redis 管道原理：</b>
-     * <pre>
+     *
+     * Redis 管道原理：
+     *
      * 逐条 GET：Client → GET key1 → Redis → val1 → Client
      *                    → GET key2 → Redis → val2 → Client  (N × RTT)
      * 管道 GET：Client → GET key1, GET key2, ..., GET keyN → Redis → val1, val2, ..., valN → Client  (1 × RTT)
-     * </pre>
+     *
      *
      * @param entityType 实体类型（如 "knowpost"）
      * @param entityIds  实体 ID 列表（如帖子的 ID 列表，一次最多 50 个建议）
