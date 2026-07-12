@@ -41,9 +41,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
 
-  # 4. Elasticsearch 9.2.1
+  # 4. Elasticsearch 9.1.4（IK 插件从 infinilabs CDN 下载）
   elasticsearch:
-    image: elasticsearch:9.2.1
+    image: elasticsearch:9.1.4
     container_name: zg-es
     environment:
       - discovery.type=single-node
@@ -51,6 +51,11 @@ services:
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
     ports:
       - "9200:9200"
+    command: >
+      bash -c "
+        bin/elasticsearch-plugin install --batch https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-9.1.4.zip;
+        /usr/local/bin/docker-entrypoint.sh eswrapper
+      "
 
   # 5. Canal Server
   canal-server:

@@ -28,6 +28,7 @@ public class CounterEventProducer {
      */
     public void publish(CounterEvent event) {
         try {
+            // 序列化事件为 JSON 字符串，不是java自带的是jackson的
             String payload = objectMapper.writeValueAsString(event);
             kafka.send(CounterTopics.EVENTS, payload); // 异步写入计数事件主题（幂等生产已在配置启用）
             log.info("Kafka计数事件已发送: topic={}, payload={}", CounterTopics.EVENTS, payload);

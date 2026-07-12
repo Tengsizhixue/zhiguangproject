@@ -19,7 +19,7 @@ import java.util.List;
 /**
  * 计数事件聚合与刷写消费者。
  *
- * <p>职责：
+ * 职责：
  * - 消费点赞/收藏等增量事件，写入 Redis 聚合桶（Hash）；
  * - 以固定延迟定时任务将聚合增量折叠到 SDS 固定结构计数；
  * - 刷写成功后删除聚合字段，避免重复加算。
@@ -58,8 +58,10 @@ public class CounterAggregationConsumer {
      * @param ack 位点确认对象（手动提交）
      */
     @KafkaListener(topics = CounterTopics.EVENTS)
+    // 手动ACK主要是用于那些强一致性的场景，确保每个事件都被处理。
     public void onMessage(String message, Acknowledgment ack) throws Exception {
         log.info("收到Kafka计数事件: {}", message);
+        // kafka只能传递字符串，所以需要反序列化为 CounterEvent 对象
         CounterEvent evt = objectMapper.readValue(message, CounterEvent.class);
         String aggKey = CounterKeys.aggKey(evt.getEntityType(), evt.getEntityId());
         String field = String.valueOf(evt.getIdx());
@@ -82,7 +84,8 @@ public class CounterAggregationConsumer {
     @Scheduled(fixedDelay = 1000L)
     public void flush() {
         flushTick++;
-        // 简化实现：扫描所有聚合桶键（生产建议使用索引集合替代 KEYS）
+        // KEYS 会遍历整个 Redis 键空间，执行期间 Redis 是单线程阻塞的，无法处理其他请求
+        // 生产环境建议使用索引集合（如 Redis Set）来存储聚合桶键，避免遍历所有键
         Set<String> keys = redis.keys("agg:" + CounterSchema.SCHEMA_ID + ":*");
         if (keys.isEmpty()) {
             if (flushTick % 30 == 1) {
@@ -94,12 +97,17 @@ public class CounterAggregationConsumer {
         log.info("开始刷写聚合桶，共 {} 个键", keys.size());
 
         for (String aggKey : keys) {
+//            entries 追求 “全且准”，但代价是 “堵死系统”；
+//            scan 追求 “稳且流畅”，但代价是 “可能多取或少取”
+//            数据量 > 5000 条，且数据高频变化（比如实时在线用户列表）：
+//            如果业务允许一点点偏差，用 scan；如果不允许任何遗漏，必须放弃 HGETALL**，
+//            改为在设计上维护一个单独的 Set 来记录所有 Field，或者用其他中间件，因为 HGETALL 在大数据量下是绝对不能用的。
             Map<Object, Object> entries = redis.opsForHash().entries(aggKey);
             if (entries.isEmpty()) {
                 continue;
             }
             // 解析 etype/eid 以定位 SDS key
-            String[] parts = aggKey.split(":", 4); // agg:schema:etype:eid
+            String[] parts = aggKey.split(":"); // agg:schema:etype:eid
             if (parts.length < 4) {
                 continue;
             }
@@ -107,12 +115,16 @@ public class CounterAggregationConsumer {
             String cntKey = CounterKeys.sdsKey(parts[2], parts[3]);
             log.info("刷写聚合桶: aggKey={}, cntKey={}, entries={}", aggKey, cntKey, entries);
 
+//redis.opsForHash()：获取 Redis 的 Hash 操作对象（HashOperations），专门用于操作 Redis 中的 Hash 数据类型。
+//.entries(aggKey)：执行 Redis 的 HGETALL 命令。它会一次性拉取 aggKey 这个 Hash 中 所有的 字段（Field）和对应的值（Value），并将其封装成一个 Java 的 Map<Object, Object> 对象返回给你。
+//.entrySet()：将上一步返回的 Map 对象转换为 Set<Map.Entry<Object, Object>>。这样你就可以使用增强 for 循环或 Stream 流来遍历每个键值对了。
             for (Map.Entry<Object, Object> e : entries.entrySet()) {
                 String field = String.valueOf(e.getKey());
                 // 增量
                 long delta;
                 try {
-                    delta = Long.parseLong(String.valueOf(e.getValue()));
+//                    把 Redis Hash 的值转为 long 类型：先转为 String，再转为 long
+                   delta = Long.parseLong(String.valueOf(e.getValue()));
                 } catch (NumberFormatException nfe) {
                     continue;
                 }
@@ -126,6 +138,7 @@ public class CounterAggregationConsumer {
                 }
 
                 try {
+//                    允许你直接操作底层的 Redis 连接（Connection），执行任何原生的 Redis 命令或 Lua 脚本。
                     redis.execute(incrScript, List.of(cntKey),
                             String.valueOf(CounterSchema.SCHEMA_LEN),
                             String.valueOf(CounterSchema.FIELD_SIZE),
@@ -149,7 +162,7 @@ public class CounterAggregationConsumer {
             }
         }
     }
-
+//TODO 这里的没看懂，大端int之类的，不过核心是sds在读多写少的情况下占优势
     private static final String INCR_FIELD_LUA = """
             
             local cntKey = KEYS[1]

@@ -165,6 +165,13 @@ public class CounterServiceImpl implements CounterService {
         //   ② SETBIT bmKey bit value  →  写入新状态
         //   ③ 返回：原状态 != 新状态 ? 1 : 0（即是否发生了状态变化）
         // 返回值含义：1L=状态翻转了（从没赞→赞了 / 从赞了→取消），0L=重复操作无需处理
+        //execute需要传入keys 参数要求的是 List，args 参数要求的是 Object...（可变参数，背后是数组）。
+        //Spring 封装好的方法，负责把 Lua 脚本发送到 Redis 服务器并拿回结果。它内部做的事：
+        //把 toggleScript 里的 Lua 文本发给 Redis
+        //把 keys 变成 Lua 里的 KEYS[] 数组
+        //把 args 变成 Lua 里的 ARGV[] 数组
+        //Redis 执行脚本，返回结果
+        //Spring 把结果转成 Long 类型（因为前面设了 setResultType(Long.class)）
         Long changed = redis.execute(toggleScript, keys, args.toArray());
         boolean ok = changed == 1L;
         log.info("位图切换结果: key={}, bit={}, add={}, changed={}", bmKey, bit, add, ok);
@@ -174,6 +181,7 @@ public class CounterServiceImpl implements CounterService {
             // 增量：点赞 +1，取消点赞 -1
             int delta = add ? 1 : -1;
 
+            // 这里等价于new CounterEvent(etype, eid, metric, idx, uid, delta);
             CounterEvent event = CounterEvent.of(etype, eid, metric, idx, uid, delta);
             log.info("准备发布计数事件: entityType={}, entityId={}, metric={}, delta={}", etype, eid, metric, delta);
 
