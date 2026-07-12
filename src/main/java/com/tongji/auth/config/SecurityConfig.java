@@ -17,7 +17,6 @@ import java.util.List;
 
 /**
  * Spring Security 安全配置。
- * <p>
  * - 关闭 CSRF（后端纯 API，使用 JWT 无会话）；
  * - 启用 CORS，当前允许所有来源（后续需替换白名单）；
  * - 无状态会话；

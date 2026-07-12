@@ -14,7 +14,7 @@ import java.util.Map;
 /**
  * 行为接口：点赞/取消点赞、收藏/取消收藏。
  *
- * <p>所有接口基于登录用户，返回操作是否改变状态以及当前状态值。</p>
+ * 所有接口基于登录用户，返回操作是否改变状态以及当前状态值。
  */
 @RestController
 @RequestMapping("/api/v1/action")

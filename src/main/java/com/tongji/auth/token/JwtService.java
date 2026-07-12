@@ -16,7 +16,6 @@ import java.util.UUID;
 
 /**
  * JWT 令牌服务。
- * <p>
  * 功能：签发 Access/Refresh Token（RS256），解码 JWT，提取用户 ID、令牌类型与令牌 ID。
  * 声明：
  * - `token_type`：标识 access 或 refresh；
@@ -38,7 +37,6 @@ public class JwtService {
 
     /**
      * 为指定用户签发一对 Access/Refresh Token。
-     * <p>
      * 令牌类型通过 `token_type` 声明区分；Refresh Token 的 `jti` 用于白名单存储与撤销。
      * 过期时间取自配置 `AuthProperties.jwt`。
      *

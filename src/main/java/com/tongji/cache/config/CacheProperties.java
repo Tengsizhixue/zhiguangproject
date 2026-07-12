@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 /**
  * 缓存相关配置项。
  *
- * <p>配置前缀：{@code cache}，用于绑定 {@code application.yml} 中的缓存参数。</p>
+ * 配置前缀：{@code cache}，用于绑定 {@code application.yml} 中的缓存参数。
  */
 @Component
 @ConfigurationProperties(prefix = "cache")
@@ -23,19 +23,15 @@ public class CacheProperties {
     public static class L2 {
         // 公共信息流缓存配置。
         private PublicCfg publicCfg = new PublicCfg();
-
         // 个人信息流缓存配置。
         private MineCfg mineCfg = new MineCfg();
-
         // 知文详情缓存配置
         private DetailCfg detailCfg = new DetailCfg();
     }
-
     @Data
     public static class PublicCfg {
         // TTL（秒）：写入后在本地缓存中保留的时长。
         private int ttlSeconds = 15;
-
         // 最大条目数：超过后按 Caffeine 策略逐出。
         private long maxSize = 1000;
     }

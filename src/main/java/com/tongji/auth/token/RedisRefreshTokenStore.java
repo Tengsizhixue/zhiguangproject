@@ -8,7 +8,6 @@ import java.util.Objects;
 
 /**
  * 基于 Redis 的刷新令牌白名单存储。
- * <p>
  * 键空间：`auth:rt:{userId}:{tokenId}`，值固定为 "1"，设置 TTL 控制过期。
  * 支持校验令牌有效性、撤销单个令牌或撤销某用户全部令牌。
  */
@@ -36,7 +35,6 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
 
     /**
      * 判断刷新令牌是否仍有效。
-     *
      * @param userId  用户 ID。
      * @param tokenId 刷新令牌 ID。
      * @return 是否有效（键存在且值为 "1"）。
@@ -49,7 +47,6 @@ public class RedisRefreshTokenStore implements RefreshTokenStore {
 
     /**
      * 撤销单个刷新令牌。
-     *
      * @param userId  用户 ID。
      * @param tokenId 刷新令牌 ID。
      */

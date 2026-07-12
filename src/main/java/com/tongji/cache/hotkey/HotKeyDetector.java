@@ -47,7 +47,7 @@ public class HotKeyDetector {
         this.properties = properties;
         int segSeconds = properties.getHotkey().getSegmentSeconds();
         int winSeconds = properties.getHotkey().getWindowSeconds();
-        this.segments = Math.max(1, winSeconds / Math.max(1, segSeconds));
+        this.segments =  winSeconds / segSeconds;
 
         // 💡 修复一配置：建立具备“自动淘汰”能力的内存池
         // 假设总窗口是 60 秒，我们设置如果一个帖子超过 5 分钟没人看，
@@ -59,7 +59,7 @@ public class HotKeyDetector {
     }
 
     public void record(String key) {
-        // 💡 修复二：如果不存在，分配一个 AtomicIntegerArray
+        //如果不存在key,就创建一个新的AtomicIntegerArray并放入缓存
         AtomicIntegerArray arr = counters.get(key, k -> new AtomicIntegerArray(segments));
         if (arr != null) {
             // 💡 修复二核心：使用底层 CAS 操作替代原生的 arr[i]++

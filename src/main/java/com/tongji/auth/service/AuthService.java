@@ -123,9 +123,7 @@ public SendCodeResponse sendCode(SendCodeRequest request) {
 
     /**
      * 注册用户并签发令牌。
-     * <p>
      * 验证标识与验证码，创建用户（可选设置密码），记录审计，签发令牌对并保存刷新令牌白名单。
-     *
      * @param request    注册请求，包含：标识类型与值、验证码、可选密码、是否同意协议。
      * @param clientInfo 客户端信息（IP/UA），用于登录审计。
      * @return 认证响应，包含用户信息与令牌对。

@@ -9,7 +9,7 @@ import java.time.Duration;
 /**
  * 认证相关配置属性，绑定前缀 {@code auth.*}。
  *
- * <p>包含以下分组：</p>
+ * 包含以下分组：
  * - Jwt：令牌签发与验证配置；
  * - Verification：验证码发送与校验配置；
  * - Password：密码策略与加密强度配置。
