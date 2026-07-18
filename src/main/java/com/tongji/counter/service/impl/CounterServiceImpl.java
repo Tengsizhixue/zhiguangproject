@@ -29,13 +29,13 @@ import java.util.concurrent.TimeUnit;
 /**
  * 内容实体计数服务实现（位图事实 + 事件聚合 + SDS 汇总）。
  *
- * <p>写入链路（单一路径，避免 double-counting）：</p>
+ * 写入链路（单一路径，避免 double-counting）：
  * toggle() → 位图翻转（Lua 原子） → Kafka 事件 → CounterAggregationConsumer → Hash 聚合桶 → flush 定时刷入 SDS
  *
- * <p>读取链路：</p>
+ * 读取链路：
  * getCounts() → 读取 SDS 固定结构 → SDS 缺失/损坏时从位图分片重建
  *
- * <p>职责：</p>
+ * 职责：
  * - 位图原子切换并产出计数事件（幂等）；
  * - 读取汇总计数（SDS），异常时基于位图分片重建；
  * - 批量读取优化与"是否点赞/收藏"判定。

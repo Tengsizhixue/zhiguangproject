@@ -86,7 +86,6 @@ public void saveCode(String scene, String identifier, String code, Duration ttl,
 
     /**
      * 校验验证码是否匹配，更新尝试计数并在成功时删除记录。
-     *
      * @param scene      场景名称。
      * @param identifier 标识（手机号或邮箱）。
      * @param code       用户输入的验证码。
