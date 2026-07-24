@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 /**
  * 计数事件生产者。
  *
- * <p>职责：将业务产生的计数增量事件异步发送到 Kafka 主题，供聚合消费者处理。</p>
+ * 职责：将业务产生的计数增量事件异步发送到 Kafka 主题，供聚合消费者处理。
  */
 @Slf4j
 @Service

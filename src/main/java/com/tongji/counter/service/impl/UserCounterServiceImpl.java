@@ -96,7 +96,6 @@ public class UserCounterServiceImpl implements UserCounterService {
         // 从数据库读取 关注数、粉丝数
         long followings = relationMapper.countFollowingActive(userId);
         long followers = relationMapper.countFollowerActive(userId);
-
         long posts;
         List<Long> ids = knowPostMapper.listMyPublishedIds(userId);
         // 将 ids 转换成字符串类型的 List
